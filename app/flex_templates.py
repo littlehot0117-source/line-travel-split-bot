@@ -1008,43 +1008,51 @@ def create_receipt_flex(
         },
         "footer": {
             "type": "box",
-            "layout": "horizontal",
-            "spacing": "sm",
+            "layout": "vertical",
+            "spacing": "xs",
             "contents": [
                 {
-                    "type": "button",
-                    "style": "secondary",
-                    "height": "sm",
-                    "color": "#F0F9FF",
-                    "action": {
-                        "type": "postback",
-                        "label": "✏️ 修改",
-                        "data": f"action=edit_expense_menu&expense_id={expense_id}",
-                        "displayText": f"修改 {item_name}"
-                    }
+                    "type": "box",
+                    "layout": "horizontal",
+                    "spacing": "sm",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "height": "sm",
+                            "color": "#F0F9FF",
+                            "action": {
+                                "type": "postback",
+                                "label": "✏️ 修改支出",
+                                "data": f"action=edit_expense_menu&expense_id={expense_id}",
+                                "displayText": f"修改 {item_name}"
+                            }
+                        },
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "height": "sm",
+                            "color": "#FEF2F2",
+                            "action": {
+                                "type": "postback",
+                                "label": "🗑️ 刪除紀錄",
+                                "data": f"action=delete_expense&expense_id={expense_id}",
+                                "displayText": f"刪除 {item_name}"
+                            }
+                        }
+                    ]
                 },
                 {
                     "type": "button",
                     "style": "primary",
                     "color": "#0284C7",
                     "height": "sm",
+                    "margin": "xs",
                     "action": {
                         "type": "postback",
-                        "label": "📊 結算",
+                        "label": "📊 查看結算報表",
                         "data": "action=view_settlement",
                         "displayText": "查看結算"
-                    }
-                },
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "height": "sm",
-                    "color": "#FEF2F2",
-                    "action": {
-                        "type": "postback",
-                        "label": "❌ 撤銷",
-                        "data": f"action=delete_expense&expense_id={expense_id}",
-                        "displayText": f"撤銷 {item_name}"
                     }
                 }
             ]
@@ -1341,6 +1349,8 @@ def create_settlement_flex(settlement_data: Dict[str, Any]) -> Dict[str, Any]:
                 for m in c_members:
                     net_val = m["net"]
                     net_str = m.get("formatted_net", str(net_val))
+                    # 格式優化：負數符號放貨幣符號前方 (例如 -NT$ 2,490)
+                    net_str = net_str.replace("NT$ -", "-NT$ ").replace("$ -", "-$ ").replace("¥ -", "-¥ ").replace("฿ -", "-฿ ")
                     net_color = "#16A34A" if net_val > 0 else ("#DC2626" if net_val < 0 else "#64748B")
                     paid_str = m.get("formatted_paid", "")
                     repay_sent = m.get("repay_sent", 0)
@@ -1363,9 +1373,9 @@ def create_settlement_flex(settlement_data: Dict[str, Any]) -> Dict[str, Any]:
                         "type": "box",
                         "layout": "horizontal",
                         "contents": [
-                            {"type": "text", "text": m["name"], "size": "sm", "weight": "bold", "color": "#0F172A", "flex": 3},
+                            {"type": "text", "text": m["name"], "size": "sm", "weight": "bold", "color": "#0F172A", "flex": 2},
                             {"type": "text", "text": detail_label, "size": "xs", "color": "#64748B", "flex": 4},
-                            {"type": "text", "text": status_str, "size": "sm", "weight": "bold", "color": status_color, "align": "end", "flex": 3}
+                            {"type": "text", "text": status_str, "size": "sm", "weight": "bold", "color": status_color, "align": "end", "flex": 5}
                         ]
                     })
             else:
@@ -1453,7 +1463,13 @@ def create_settlement_flex(settlement_data: Dict[str, Any]) -> Dict[str, Any]:
                 "margin": "sm"
             })
 
-    header_sub = f"共 {expense_count} 筆 • 各幣別獨立折算" if is_multi_currency else f"折合支出：{base_curr} {total_spent:,}    共 {expense_count} 筆"
+    if is_multi_currency:
+        header_sub = f"共 {expense_count} 筆 • 各幣別獨立折算"
+    else:
+        single_curr = currency_settlements[0].get("currency", base_curr) if currency_settlements else base_curr
+        from app.currency import CURRENCY_SYMBOLS
+        sym = CURRENCY_SYMBOLS.get(single_curr, single_curr)
+        header_sub = f"總支出：{sym} {total_spent:,}    共 {expense_count} 筆"
 
     return {
         "type": "bubble",

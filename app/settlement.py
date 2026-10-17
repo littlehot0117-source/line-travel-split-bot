@@ -127,20 +127,27 @@ def calculate_group_settlement(db: Session, group_id: int) -> dict:
             net = (sp_p - sp_o) + (rp_s - rp_r)
             curr_balances[m.display_name] = net
             if sp_p > 0 or sp_o > 0 or rp_s > 0 or rp_r > 0:
-                curr_member_summary.append({
-                    "member_id": m.id,
-                    "name": m.display_name,
-                    "paid": round(sp_p, precision) if precision > 0 else round(sp_p),
-                    "owed": round(sp_o, precision) if precision > 0 else round(sp_o),
-                    "repay_sent": round(rp_s, precision) if precision > 0 else round(rp_s),
-                    "repay_recv": round(rp_r, precision) if precision > 0 else round(rp_r),
-                    "net": round(net, precision) if precision > 0 else round(net),
-                    "formatted_paid": format_amount(sp_p, curr),
-                    "formatted_owed": format_amount(sp_o, curr),
-                    "formatted_repay_sent": format_amount(rp_s, curr) if rp_s > 0 else "",
-                    "formatted_repay_recv": format_amount(rp_r, curr) if rp_r > 0 else "",
-                    "formatted_net": ("+" if round(net, precision) > 0 else "") + format_amount(net, curr)
-                })
+                    if round(net, precision) > 0:
+                        fmt_net = f"+{format_amount(net, curr)}"
+                    elif round(net, precision) < 0:
+                        fmt_net = f"-{format_amount(abs(net), curr)}"
+                    else:
+                        fmt_net = format_amount(0, curr)
+
+                    curr_member_summary.append({
+                        "member_id": m.id,
+                        "name": m.display_name,
+                        "paid": round(sp_p, precision) if precision > 0 else round(sp_p),
+                        "owed": round(sp_o, precision) if precision > 0 else round(sp_o),
+                        "repay_sent": round(rp_s, precision) if precision > 0 else round(rp_s),
+                        "repay_recv": round(rp_r, precision) if precision > 0 else round(rp_r),
+                        "net": round(net, precision) if precision > 0 else round(net),
+                        "formatted_paid": format_amount(sp_p, curr),
+                        "formatted_owed": format_amount(sp_o, curr),
+                        "formatted_repay_sent": format_amount(rp_s, curr) if rp_s > 0 else "",
+                        "formatted_repay_recv": format_amount(rp_r, curr) if rp_r > 0 else "",
+                        "formatted_net": fmt_net
+                    })
 
         # 計算該幣別的獨立債務最小化轉帳指南
         curr_transfers = simplify_debts(curr_balances, precision=precision)

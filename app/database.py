@@ -28,12 +28,13 @@ def get_db():
 
 def init_db():
     """初始化資料庫表格並確保新欄位自動遷移"""
-    from sqlalchemy import text
+    from sqlalchemy import text, inspect
     from app import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
-    # 針對既有 SQLite / PostgreSQL 資料庫自動補齊多幣別欄位
-    with engine.connect() as conn:
+    # 針對既有 SQLite / PostgreSQL 資料庫自動補齊多幣別與編輯欄位
+    try:
+        inspector = inspect(engine)
         migrations = [
             ("group_trips", [
                 ("base_currency", "VARCHAR(10) DEFAULT 'TWD'"),
@@ -50,10 +51,20 @@ def init_db():
                 ("exchange_rate", "FLOAT DEFAULT 1.0")
             ])
         ]
-        for tbl, cols in migrations:
-            for col_name, col_type in cols:
+
+        with engine.connect() as conn:
+            for tbl, cols in migrations:
                 try:
-                    conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"))
-                    conn.commit()
+                    existing_cols = [c["name"] for c in inspector.get_columns(tbl)]
                 except Exception:
-                    pass
+                    existing_cols = []
+
+                for col_name, col_type in cols:
+                    if col_name not in existing_cols:
+                        try:
+                            conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"))
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+    except Exception:
+        pass

@@ -63,7 +63,7 @@ def health():
     return {"status": "ok"}
 
 
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse, HTMLResponse
 from app.models import GroupTrip, Member, Expense, ExpenseSplit, DraftExpense

@@ -10,9 +10,11 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 # 資料庫連線：預設本地 SQLite，若有設定 PostgreSQL (如 Supabase) 則直接連線
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./travel_split.db")
 
-# 如果 PostgreSQL URL 是 postgres:// 開頭（常見於舊版 Heroku 或某些託管平台），SQLAlchemy 要求 postgresql://
+# 如果 PostgreSQL URL 未指定 driver，SQLAlchemy 預設可能尋找 psycopg3，此處明確指定 psycopg2
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")

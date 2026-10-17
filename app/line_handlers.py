@@ -397,6 +397,16 @@ def parse_full_expense(text: str, member_list: List[Member], default_curr: str =
             payer_idx = 0
 
     if not payer:
+        # 若 tokens 不為空且未找到付款人：
+        # 檢查 tokens 是否包含分攤相關意圖（如「全員」、「大家」、「3人」等）或包含任何群組成員
+        rem_str = " ".join(tokens)
+        is_split_intent = any(k in rem_str for k in ["全員", "全體", "大家", "全部", "每人", "所有人"]) or bool(re.search(r"\d+\s*(?:人|位)", rem_str))
+        matched_any_member = any(find_member_fuzzy(t, member_list) is not None for t in tokens)
+
+        if not is_split_intent and not matched_any_member:
+            # tokens 既不是成員、也不是分攤指令，代表後續文字為一般聊天語句（如「...這數字太詭異了」），非記帳指令
+            return None
+
         return {
             "mode": "SIMPLE",
             "item": item,
@@ -1480,6 +1490,25 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
     user_id = getattr(event.source, "user_id", "")
 
     group = get_or_create_group(db, line_group_id)
+
+    # 0. 取消未完成的記帳作業（從卡片點選 [❌ 取消記帳]）
+    if action == "cancel_draft":
+        draft_id = int(params.get("draft_id", 0))
+        draft = None
+        if draft_id > 0:
+            draft = db.query(DraftExpense).filter(DraftExpense.id == draft_id).first()
+        if not draft:
+            draft = db.query(DraftExpense).filter(DraftExpense.line_group_id == line_group_id).order_by(DraftExpense.id.desc()).first()
+
+        item_name = draft.item_name if draft else "該筆"
+
+        # 刪除該群組內相關的所有未完成草稿
+        db.query(DraftExpense).filter(DraftExpense.line_group_id == line_group_id).delete()
+        db.commit()
+
+        clear_waiting_state(line_group_id, user_id)
+        reply_text(messaging_api, reply_token, f"👌 已為您取消【{item_name}】的記帳作業！")
+        return
 
     # 1. 步驟一選定付款人完成 -> 進入步驟二：選定幾人均分
     if action == "select_payer":

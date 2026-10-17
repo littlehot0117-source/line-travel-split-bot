@@ -225,6 +225,68 @@ class TestEditAndDateParsing(unittest.TestCase):
         self.db.refresh(exp)
         self.assertEqual(exp.item_name, "新名稱品項")
 
+    def test_conversational_chatter_is_not_treated_as_expense(self):
+        """一般閒聊帶有數字的句子，不應被誤判為記帳"""
+        # 1. 10/28 的接送 500...這數字太詭異了
+        res = parse_full_expense("10/28 的接送 500...這數字太詭異了", self.members)
+        self.assertIsNone(res, "帶有閒聊評論的句子不應被誤判為記帳")
+
+        # 2. 這頓吃了 1200 真貴
+        res = parse_full_expense("這頓吃了 1200 真貴", self.members)
+        self.assertIsNone(res)
+
+        # 3. 正常記帳仍應正確識別
+        res_ok = parse_full_expense("10/28 的接送 500", self.members)
+        self.assertIsNotNone(res_ok)
+        self.assertEqual(res_ok["item"], "10/28 的接送")
+        self.assertEqual(res_ok["amount"], 500.0)
+
+    def test_postback_cancel_draft_button(self):
+        """測試點擊卡片上的 [❌ 取消記帳] 按鈕，能正確刪除草稿並取消"""
+        draft = DraftExpense(
+            line_group_id="grp_thai_trip",
+            initiator_user_id="user_jiaxin",
+            item_name="10/28 的接送",
+            amount=500.0,
+            currency="TWD"
+        )
+        self.db.add(draft)
+        self.db.commit()
+
+        # 點擊取消記帳按鈕
+        evt_cancel = MockPostbackEvent(f"action=cancel_draft&draft_id={draft.id}")
+        handle_postback(evt_cancel, self.db, self.mock_api_client)
+
+        # 檢查草稿已被清除
+        self.assertIsNone(self.db.query(DraftExpense).first())
+
+    def test_flex_templates_contain_cancel_draft_action(self):
+        """測試所有引導卡片皆具備取消記帳按鈕"""
+        from app.flex_templates import (
+            create_payer_selection_flex,
+            create_split_selection_flex,
+            create_custom_split_flex,
+            create_member_picker_flex,
+        )
+        import json
+        member_dicts = [{"id": m.id, "name": m.display_name} for m in self.members]
+
+        # 1. 步驟 1/2 付款人卡片
+        flex1 = create_payer_selection_flex(99, "測試", 500.0, member_dicts)
+        self.assertIn("action=cancel_draft", json.dumps(flex1))
+
+        # 2. 步驟 2/2 分攤方式卡片
+        flex2 = create_split_selection_flex(99, "測試", 500.0, "佳欣", self.m1.id, member_dicts)
+        self.assertIn("action=cancel_draft", json.dumps(flex2))
+
+        # 3. 指定夥伴分攤卡片
+        flex3 = create_custom_split_flex(99, "測試", 500.0, "佳欣", self.m1.id, member_dicts)
+        self.assertIn("action=cancel_draft", json.dumps(flex3))
+
+        # 4. 勾選均分夥伴卡片
+        flex4 = create_member_picker_flex(99, "測試", 500.0, "佳欣", self.m1.id, member_dicts, [self.m1.id])
+        self.assertIn("action=cancel_draft", json.dumps(flex4))
+
 
 if __name__ == "__main__":
     unittest.main()

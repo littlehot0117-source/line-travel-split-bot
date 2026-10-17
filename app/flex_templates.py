@@ -354,6 +354,19 @@ def create_payer_selection_flex(
         }
     })
 
+    member_buttons.append({
+        "type": "button",
+        "style": "link",
+        "height": "sm",
+        "color": "#EF4444",
+        "action": {
+            "type": "postback",
+            "label": "❌ 取消記帳",
+            "data": f"action=cancel_draft&draft_id={draft_id}",
+            "displayText": "取消記帳"
+        }
+    })
+
     amount_box_contents = [
         {"type": "text", "text": "💰 金額", "color": "#64748B", "size": "sm", "flex": 2},
         {"type": "text", "text": amount_str, "weight": "bold", "color": "#16A34A", "size": "lg", "flex": 5}
@@ -493,6 +506,20 @@ def create_split_selection_flex(
         }
     })
 
+    # 4. 取消此筆記帳
+    buttons.append({
+        "type": "button",
+        "style": "link",
+        "color": "#EF4444",
+        "height": "sm",
+        "action": {
+            "type": "postback",
+            "label": "❌ 取消記帳",
+            "data": f"action=cancel_draft&draft_id={draft_id}",
+            "displayText": "取消記帳"
+        }
+    })
+
     split_body_contents = [
         {
             "type": "box",
@@ -602,6 +629,19 @@ def create_custom_split_flex(
                 "displayText": f"僅由 {m['name']} 承擔"
             }
         })
+
+    member_buttons.append({
+        "type": "button",
+        "style": "link",
+        "color": "#EF4444",
+        "height": "sm",
+        "action": {
+            "type": "postback",
+            "label": "❌ 取消記帳",
+            "data": f"action=cancel_draft&draft_id={draft_id}",
+            "displayText": "取消記帳"
+        }
+    })
 
     return {
         "type": "bubble",
@@ -829,6 +869,19 @@ def create_member_picker_flex(
             "type": "postback",
             "label": "⬅️ 返回重新選擇人數",
             "data": f"action=select_payer&draft_id={draft_id}&payer_id={payer_id}"
+        }
+    })
+
+    footer_contents.append({
+        "type": "button",
+        "style": "link",
+        "height": "sm",
+        "color": "#EF4444",
+        "action": {
+            "type": "postback",
+            "label": "❌ 取消記帳",
+            "data": f"action=cancel_draft&draft_id={draft_id}",
+            "displayText": "取消記帳"
         }
     })
 

@@ -72,8 +72,9 @@ from app.currency import format_amount
 
 
 class ConfirmPickerRequest(BaseModel):
-    draft_id: int
-    payer_id: int
+    draft_id: Optional[int] = None
+    expense_id: Optional[int] = None
+    payer_id: Optional[int] = None
     selected_ids: List[int]
 
 
@@ -90,8 +91,9 @@ def api_get_settlement(line_group_id: str, db: Session = Depends(get_db)):
 @app.get("/picker", response_class=HTMLResponse)
 def get_member_picker_page(
     request: Request,
-    draft_id: int,
-    payer_id: int,
+    draft_id: Optional[int] = None,
+    expense_id: Optional[int] = None,
+    payer_id: Optional[int] = None,
     target_count: int = 0,
     db: Session = Depends(get_db)
 ):
@@ -101,24 +103,50 @@ def get_member_picker_page(
     if host:
         set_base_url(f"{proto}://{host}")
 
-    draft = db.query(DraftExpense).filter(DraftExpense.id == draft_id).first()
-    payer = db.query(Member).filter(Member.id == payer_id).first()
-    if not draft or not payer:
-        return HTMLResponse("""
-        <!DOCTYPE html>
-        <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-        <body style="font-family: sans-serif; text-align: center; padding: 40px; color: #475569;">
-            <h2>⚠️ 該筆記帳作業已完成或過期</h2>
-            <p style="margin-top: 10px;">請關閉此視窗，返回 LINE 群組查看收據或重新記帳。</p>
-        </body></html>
-        """, status_code=200)
+    if expense_id:
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            return HTMLResponse("""
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 40px; color: #475569;">
+                <h2>⚠️ 該筆支出不存在或已被刪除</h2>
+                <p style="margin-top: 10px;">請關閉此視窗，返回 LINE 群組重新操作。</p>
+            </body></html>
+            """, status_code=200)
 
-    group = db.query(GroupTrip).filter(GroupTrip.line_group_id == draft.line_group_id).first()
-    members = db.query(Member).filter(Member.group_id == group.id).all() if group else []
+        group = db.query(GroupTrip).filter(GroupTrip.id == expense.group_id).first()
+        members = db.query(Member).filter(Member.group_id == group.id).all() if group else []
+        curr = expense.currency or "TWD"
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        amount_str = format_amount(orig_amt, curr)
+        payer = expense.payer
+        payer_display = payer.display_name if payer else "未知"
+        eff_draft_id = 0
+        eff_expense_id = expense.id
+        eff_payer_id = expense.payer_id or 0
+    else:
+        draft = db.query(DraftExpense).filter(DraftExpense.id == draft_id).first()
+        payer = db.query(Member).filter(Member.id == payer_id).first()
+        if not draft or not payer:
+            return HTMLResponse("""
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 40px; color: #475569;">
+                <h2>⚠️ 該筆記帳作業已完成或過期</h2>
+                <p style="margin-top: 10px;">請關閉此視窗，返回 LINE 群組查看收據或重新記帳。</p>
+            </body></html>
+            """, status_code=200)
 
-    curr = draft.currency or "TWD"
-    orig_amt = draft.original_amount if (draft.original_amount and draft.original_amount > 0) else draft.amount
-    amount_str = format_amount(orig_amt, curr)
+        group = db.query(GroupTrip).filter(GroupTrip.line_group_id == draft.line_group_id).first()
+        members = db.query(Member).filter(Member.group_id == group.id).all() if group else []
+        curr = draft.currency or "TWD"
+        orig_amt = draft.original_amount if (draft.original_amount and draft.original_amount > 0) else draft.amount
+        amount_str = format_amount(orig_amt, curr)
+        payer_display = payer.display_name
+        eff_draft_id = draft.id or 0
+        eff_expense_id = 0
+        eff_payer_id = payer.id
 
     member_cards_html = ""
     for m in members:
@@ -216,8 +244,9 @@ def get_member_picker_page(
     </div>
 
     <script>
-        const draftId = {draft_id};
-        const payerId = {payer_id};
+        const draftId = {eff_draft_id};
+        const expenseId = {eff_expense_id};
+        const payerId = {eff_payer_id};
         const targetCount = {target_count};
         const totalAmount = {orig_amt};
         const currency = "{curr}";
@@ -315,6 +344,7 @@ def get_member_picker_page(
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         draft_id: draftId,
+                        expense_id: expenseId,
                         payer_id: payerId,
                         selected_ids: selectedIds
                     }})
@@ -355,6 +385,79 @@ def get_member_picker_page(
 @app.post("/api/confirm_picker")
 def api_confirm_picker(req: ConfirmPickerRequest, db: Session = Depends(get_db)):
     """API: 內嵌網頁勾選完成後送出分攤"""
+    if req.expense_id:
+        expense = db.query(Expense).filter(Expense.id == req.expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            raise HTTPException(status_code=404, detail="該筆支出紀錄不存在或已被刪除")
+        group = db.query(GroupTrip).filter(GroupTrip.id == expense.group_id).first()
+        if not group:
+            raise HTTPException(status_code=404, detail="找不到對應群組")
+        if not req.selected_ids:
+            raise HTTPException(status_code=400, detail="尚未選取任何均分夥伴")
+
+        target_members = db.query(Member).filter(Member.id.in_(req.selected_ids)).all()
+        if not target_members:
+            raise HTTPException(status_code=400, detail="選取的夥伴不存在")
+
+        split_count = len(target_members)
+        curr = expense.currency or "TWD"
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        per_person_orig = orig_amt / split_count
+        per_person_base = round(expense.amount / split_count, 2)
+        names_str = "、".join(m.display_name for m in target_members)
+        is_all = (split_count == len(group.members))
+        split_desc = f"全體 {split_count} 人均分（每人 {format_amount(per_person_orig, curr)}）" if is_all else f"{names_str} 共 {split_count} 人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+        db.query(ExpenseSplit).filter(ExpenseSplit.expense_id == expense.id).delete()
+        expense.split_count = split_count
+        expense.split_type = "EQUAL_ALL" if is_all else f"CUSTOM_{split_count}"
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        for m in target_members:
+            db.add(ExpenseSplit(expense_id=expense.id, member_id=m.id, amount_owed=per_person_base))
+        db.commit()
+
+        # 發送更新後的收據到 LINE 群組
+        try:
+            from datetime import datetime, timezone
+            from app.flex_templates import create_receipt_flex
+            from linebot.v3.messaging import ApiClient, MessagingApi, PushMessageRequest, FlexMessage, FlexContainer
+
+            now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+            payer = expense.payer
+            payer_name = payer.display_name if payer else "未知"
+            receipt_card = create_receipt_flex(
+                expense.id,
+                expense.item_name,
+                expense.amount,
+                payer_name,
+                split_desc,
+                now_str,
+                currency=expense.currency,
+                original_amount=expense.original_amount,
+                rate=expense.exchange_rate
+            )
+            display_cost = format_amount(expense.original_amount, expense.currency)
+
+            with ApiClient(line_config) as api_client:
+                messaging_api = MessagingApi(api_client)
+                messaging_api.push_message(
+                    PushMessageRequest(
+                        to=group.line_group_id,
+                        messages=[
+                            FlexMessage(
+                                alt_text=f"✏️ 分攤修改成功：{expense.item_name} {display_cost}",
+                                contents=FlexContainer.from_dict(receipt_card)
+                            )
+                        ]
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Failed to push edit confirmation: {e}")
+
+        return {"status": "success", "message": "已成功更新分攤夥伴！"}
+
     draft = db.query(DraftExpense).filter(DraftExpense.id == req.draft_id).first()
     payer = db.query(Member).filter(Member.id == req.payer_id).first()
     if not draft or not payer:
@@ -392,6 +495,7 @@ def api_confirm_picker(req: ConfirmPickerRequest, db: Session = Depends(get_db))
         split_type=f"CUSTOM_{split_count}"
     )
     db.add(expense)
+    group.last_active_expense_id = expense.id
     db.commit()
     db.refresh(expense)
 

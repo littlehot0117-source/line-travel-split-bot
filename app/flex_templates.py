@@ -259,11 +259,12 @@ def create_command_guide_flex() -> Dict[str, Any]:
                     "type": "box",
                     "layout": "vertical",
                     "contents": [
-                        {"type": "text", "text": "📊 4. 結算與帳務：", "weight": "bold", "size": "xs", "color": "#0284C7"},
-                        {"type": "text", "text": "• 結算（最少轉帳次數還款指南）", "size": "xs", "color": "#0F172A", "margin": "xs"},
-                        {"type": "text", "text": "• 明細（查看所有支出與撤銷）", "size": "xs", "color": "#0F172A"},
-                        {"type": "text", "text": "• 新旅程（歸零重新開始）", "size": "xs", "color": "#0F172A"},
-                        {"type": "text", "text": "• 選單（開啟圖形選單卡片）", "size": "xs", "color": "#0F172A"}
+                        {"type": "text", "text": "📊 4. 結算與明細修改：", "weight": "bold", "size": "xs", "color": "#0284C7"},
+                        {"type": "text", "text": "• 明細（查看紀錄，點【✏️修改】編輯項目）", "size": "xs", "color": "#0F172A", "margin": "xs"},
+                        {"type": "text", "text": "• 修改 泰奶 金額 300 或 改金額 500", "size": "xs", "color": "#0F172A"},
+                        {"type": "text", "text": "• 改付款人 佳欣 / 改分攤 全員", "size": "xs", "color": "#0F172A"},
+                        {"type": "text", "text": "• 結算（最少轉帳次數還款指南）", "size": "xs", "color": "#0F172A"},
+                        {"type": "text", "text": "• 新旅程（歸零重新開始）", "size": "xs", "color": "#0F172A"}
                     ]
                 },
                 {"type": "separator"},
@@ -1012,12 +1013,24 @@ def create_receipt_flex(
             "contents": [
                 {
                     "type": "button",
+                    "style": "secondary",
+                    "height": "sm",
+                    "color": "#F0F9FF",
+                    "action": {
+                        "type": "postback",
+                        "label": "✏️ 修改",
+                        "data": f"action=edit_expense_menu&expense_id={expense_id}",
+                        "displayText": f"修改 {item_name}"
+                    }
+                },
+                {
+                    "type": "button",
                     "style": "primary",
                     "color": "#0284C7",
                     "height": "sm",
                     "action": {
                         "type": "postback",
-                        "label": "📊 查看結算",
+                        "label": "📊 結算",
                         "data": "action=view_settlement",
                         "displayText": "查看結算"
                     }
@@ -1026,9 +1039,10 @@ def create_receipt_flex(
                     "type": "button",
                     "style": "secondary",
                     "height": "sm",
+                    "color": "#FEF2F2",
                     "action": {
                         "type": "postback",
-                        "label": "❌ 撤銷此筆",
+                        "label": "❌ 撤銷",
                         "data": f"action=delete_expense&expense_id={expense_id}",
                         "displayText": f"撤銷 {item_name}"
                     }
@@ -1530,16 +1544,15 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
         item_sub = "💸 還款抵扣 • 債務已沖銷" if is_repay else f"{exp['payer_name']} 墊付 • {exp['split_desc']}"
         amt_color = "#059669" if is_repay else "#16A34A"
 
-        right_contents = []
-        # 主金額永遠顯示該筆消費的原始幣別與金額（例如：泰奶顯示 ฿ 200.00）
-        right_contents.append({
-            "type": "text",
-            "text": format_amount(orig_amt, curr),
-            "weight": "bold",
-            "size": "sm",
-            "color": amt_color
-        })
-        # 若非台幣，小字顯示折合台幣（例如：≈ NT$ 184）
+        right_contents = [
+            {
+                "type": "text",
+                "text": format_amount(orig_amt, curr),
+                "weight": "bold",
+                "size": "sm",
+                "color": amt_color
+            }
+        ]
         if curr != "TWD":
             right_contents.append({
                 "type": "text",
@@ -1548,36 +1561,66 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
                 "color": "#64748B"
             })
 
-        right_contents.append({
+        action_buttons = []
+        if not is_repay:
+            action_buttons.append({
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "color": "#F0F9FF",
+                "action": {
+                    "type": "postback",
+                    "label": "✏️ 修改",
+                    "data": f"action=edit_expense_menu&expense_id={exp['id']}",
+                    "displayText": f"修改 {item_title}"
+                }
+            })
+        action_buttons.append({
             "type": "button",
-            "style": "link",
+            "style": "secondary",
             "height": "sm",
+            "color": "#FEF2F2",
             "action": {
                 "type": "postback",
-                "label": "刪除",
-                "data": f"action=delete_expense&expense_id={exp['id']}"
+                "label": "🗑️ 刪除",
+                "data": f"action=delete_expense&expense_id={exp['id']}",
+                "displayText": f"刪除 {item_title}"
             }
         })
 
         item_rows.append({
             "type": "box",
-            "layout": "horizontal",
+            "layout": "vertical",
+            "spacing": "xs",
             "contents": [
                 {
                     "type": "box",
-                    "layout": "vertical",
-                    "flex": 6,
+                    "layout": "horizontal",
                     "contents": [
-                        {"type": "text", "text": item_title, "weight": "bold", "size": "sm", "color": "#0F172A"},
-                        {"type": "text", "text": item_sub, "size": "xs", "color": "#64748B"}
+                        {
+                            "type": "box",
+                            "layout": "vertical",
+                            "flex": 7,
+                            "contents": [
+                                {"type": "text", "text": item_title, "weight": "bold", "size": "sm", "color": "#0F172A", "wrap": True},
+                                {"type": "text", "text": item_sub, "size": "xs", "color": "#64748B", "wrap": True}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "vertical",
+                            "flex": 4,
+                            "alignItems": "flex-end",
+                            "contents": right_contents
+                        }
                     ]
                 },
                 {
                     "type": "box",
-                    "layout": "vertical",
-                    "flex": 4,
-                    "alignItems": "flex-end",
-                    "contents": right_contents
+                    "layout": "horizontal",
+                    "justifyContent": "flex-end",
+                    "spacing": "sm",
+                    "contents": action_buttons
                 }
             ]
         })
@@ -1613,6 +1656,411 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
                         "label": "📊 查看總結算",
                         "data": "action=view_settlement",
                         "displayText": "查看結算"
+                    }
+                }
+            ]
+        }
+    }
+
+
+def create_edit_expense_flex(expense_data: Dict[str, Any], base_currency: str = "TWD") -> Dict[str, Any]:
+    """修改單筆支出 Flex 卡片選單"""
+    from app.currency import format_amount
+
+    exp_id = expense_data["id"]
+    item_name = expense_data["item_name"]
+    curr = expense_data.get("currency") or "TWD"
+    orig_amt = expense_data.get("original_amount") if expense_data.get("original_amount") is not None else expense_data.get("amount", 0)
+    base_twd_amt = expense_data.get("amount", 0)
+    payer_name = expense_data.get("payer_name", "未知")
+    split_desc = expense_data.get("split_desc", "均分")
+
+    amount_display = format_amount(orig_amt, curr)
+    if curr != "TWD":
+        amount_display += f" (≈ NT$ {int(round(base_twd_amt)):,})"
+
+    return {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#0284C7",
+            "paddingAll": "15px",
+            "contents": [
+                {"type": "text", "text": "✏️ 編輯支出內容", "weight": "bold", "color": "#FFFFFF", "size": "md"},
+                {"type": "text", "text": f"正在修改：{item_name}", "color": "#E0F2FE", "size": "xs", "margin": "xs"}
+            ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "backgroundColor": "#F8FAFC",
+                    "cornerRadius": "md",
+                    "paddingAll": "10px",
+                    "spacing": "xs",
+                    "contents": [
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "項目", "color": "#64748B", "size": "xs", "flex": 2},
+                                {"type": "text", "text": item_name, "weight": "bold", "color": "#0F172A", "size": "xs", "flex": 6}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "金額", "color": "#64748B", "size": "xs", "flex": 2},
+                                {"type": "text", "text": amount_display, "weight": "bold", "color": "#16A34A", "size": "xs", "flex": 6}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "付款人", "color": "#64748B", "size": "xs", "flex": 2},
+                                {"type": "text", "text": payer_name, "color": "#0F172A", "size": "xs", "flex": 6}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "分攤", "color": "#64748B", "size": "xs", "flex": 2},
+                                {"type": "text", "text": split_desc, "color": "#0F172A", "size": "xs", "flex": 6}
+                            ]
+                        }
+                    ]
+                },
+                {"type": "separator"},
+                {
+                    "type": "text",
+                    "text": "請點選欲修改的欄位：",
+                    "size": "xs",
+                    "color": "#475569",
+                    "weight": "bold"
+                },
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "primary",
+                            "color": "#0284C7",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "💵 修改金額",
+                                "data": f"action=edit_prompt_amount&expense_id={exp_id}",
+                                "displayText": f"修改 {item_name} 金額"
+                            }
+                        },
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "color": "#F0F9FF",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "👤 更換付款人",
+                                "data": f"action=edit_show_payer&expense_id={exp_id}",
+                                "displayText": f"更換 {item_name} 付款人"
+                            }
+                        },
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "color": "#F0F9FF",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "🤝 重新設定分攤夥伴",
+                                "data": f"action=edit_show_splits&expense_id={exp_id}",
+                                "displayText": f"重新設定 {item_name} 分攤"
+                            }
+                        },
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "color": "#F0F9FF",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "📝 修改項目名稱",
+                                "data": f"action=edit_prompt_name&expense_id={exp_id}",
+                                "displayText": f"修改 {item_name} 名稱"
+                            }
+                        },
+                        {
+                            "type": "button",
+                            "style": "secondary",
+                            "color": "#FEF2F2",
+                            "height": "sm",
+                            "action": {
+                                "type": "postback",
+                                "label": "🗑️ 刪除此筆支出",
+                                "data": f"action=delete_expense&expense_id={exp_id}",
+                                "displayText": f"刪除 {item_name}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {
+                        "type": "postback",
+                        "label": "📋 返回支出明細",
+                        "data": "action=view_expenses",
+                        "displayText": "查看明細"
+                    }
+                }
+            ]
+        }
+    }
+
+
+def create_edit_payer_selection_flex(
+    expense_id: int,
+    item_name: str,
+    members: List[Dict[str, Any]],
+    current_payer_id: int
+) -> Dict[str, Any]:
+    """更換付款人選單 Flex"""
+    buttons = []
+    curr_row = []
+    for m in members:
+        is_current = (m["id"] == current_payer_id)
+        if is_current:
+            btn = {
+                "type": "button",
+                "style": "primary",
+                "color": "#10B981",
+                "height": "sm",
+                "action": {
+                    "type": "postback",
+                    "label": f"✅ {m['name']} (目前)",
+                    "data": f"action=edit_expense_menu&expense_id={expense_id}"
+                }
+            }
+        else:
+            btn = {
+                "type": "button",
+                "style": "secondary",
+                "color": "#F1F5F9",
+                "height": "sm",
+                "action": {
+                    "type": "postback",
+                    "label": m["name"],
+                    "data": f"action=do_edit_payer&expense_id={expense_id}&payer_id={m['id']}",
+                    "displayText": f"更改付款人為 {m['name']}"
+                }
+            }
+        curr_row.append(btn)
+        if len(curr_row) == 2:
+            buttons.append({
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "contents": curr_row
+            })
+            curr_row = []
+    if curr_row:
+        buttons.append({
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": curr_row
+        })
+
+    return {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#0284C7",
+            "paddingAll": "15px",
+            "contents": [
+                {"type": "text", "text": "👤 更換付款人", "weight": "bold", "color": "#FFFFFF", "size": "md"},
+                {"type": "text", "text": f"【{item_name}】由誰代墊？", "color": "#E0F2FE", "size": "xs", "margin": "xs"}
+            ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "請點選新的代墊夥伴：", "size": "xs", "color": "#64748B"},
+                {"type": "separator", "margin": "sm"},
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "margin": "sm",
+                    "contents": buttons
+                }
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {
+                        "type": "postback",
+                        "label": "🔙 返回編輯選單",
+                        "data": f"action=edit_expense_menu&expense_id={expense_id}"
+                    }
+                }
+            ]
+        }
+    }
+
+
+def create_edit_split_selection_flex(
+    expense_id: int,
+    item_name: str,
+    amount_str: str,
+    members: List[Dict[str, Any]],
+    current_split_member_ids: List[int],
+    base_url: str = ""
+) -> Dict[str, Any]:
+    """重新設定分攤方式選單 Flex"""
+    member_count = len(members)
+    buttons = []
+
+    # 1. 全員均分
+    buttons.append({
+        "type": "button",
+        "style": "primary",
+        "color": "#0284C7",
+        "height": "sm",
+        "action": {
+            "type": "postback",
+            "label": f"👥 全體均分 ({member_count} 人平分)",
+            "data": f"action=do_edit_split_all&expense_id={expense_id}",
+            "displayText": f"全體均分 {item_name}"
+        }
+    })
+
+    # 2. 同頁挑選（若有 base_url）
+    if base_url:
+        buttons.append({
+            "type": "button",
+            "style": "secondary",
+            "height": "sm",
+            "action": {
+                "type": "uri",
+                "label": "📱 同頁勾選分攤夥伴（零洗版）",
+                "uri": f"{base_url}/picker?expense_id={expense_id}&target_count=0"
+            }
+        })
+
+    # 3. 個別成員單獨全額承擔
+    single_buttons = []
+    curr_row = []
+    for m in members:
+        curr_row.append({
+            "type": "button",
+            "style": "secondary",
+            "color": "#F8FAFC",
+            "height": "sm",
+            "action": {
+                "type": "postback",
+                "label": f"由 {m['name']} 承擔",
+                "data": f"action=do_edit_split_single&expense_id={expense_id}&member_id={m['id']}",
+                "displayText": f"由 {m['name']} 全額承擔 {item_name}"
+            }
+        })
+        if len(curr_row) == 2:
+            single_buttons.append({
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "contents": curr_row
+            })
+            curr_row = []
+    if curr_row:
+        single_buttons.append({
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": curr_row
+        })
+
+    return {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#0284C7",
+            "paddingAll": "15px",
+            "contents": [
+                {"type": "text", "text": "🤝 重新設定分攤方式", "weight": "bold", "color": "#FFFFFF", "size": "md"},
+                {"type": "text", "text": f"【{item_name}】{amount_str}", "color": "#E0F2FE", "size": "xs", "margin": "xs"}
+            ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {"type": "text", "text": "請選擇分攤模式：", "size": "xs", "color": "#64748B"},
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "contents": buttons
+                },
+                {"type": "separator", "margin": "md"},
+                {"type": "text", "text": "或由特定夥伴全額承擔：", "size": "xs", "color": "#64748B", "margin": "sm"},
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "spacing": "sm",
+                    "contents": single_buttons
+                },
+                {"type": "separator", "margin": "md"},
+                {
+                    "type": "text",
+                    "text": "💡 亦可直接輸入：「改分攤 小明 小美」或「改分攤 全員」",
+                    "size": "xxs",
+                    "color": "#0284C7",
+                    "wrap": True,
+                    "margin": "xs"
+                }
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {
+                        "type": "postback",
+                        "label": "🔙 返回編輯選單",
+                        "data": f"action=edit_expense_menu&expense_id={expense_id}"
                     }
                 }
             ]

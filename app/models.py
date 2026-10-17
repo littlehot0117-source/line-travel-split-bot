@@ -16,6 +16,7 @@ class GroupTrip(Base):
     line_group_id = Column(String(100), unique=True, index=True, nullable=False)
     trip_name = Column(String(100), default="旅程記帳")
     base_currency = Column(String(10), default="TWD")  # 主要結算幣別
+    last_active_expense_id = Column(Integer, nullable=True)  # 最近活躍/正在編輯的支出 ID
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utc_now)
 

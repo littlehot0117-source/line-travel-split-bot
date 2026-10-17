@@ -35,7 +35,10 @@ def init_db():
     # 針對既有 SQLite / PostgreSQL 資料庫自動補齊多幣別欄位
     with engine.connect() as conn:
         migrations = [
-            ("group_trips", [("base_currency", "VARCHAR(10) DEFAULT 'TWD'")]),
+            ("group_trips", [
+                ("base_currency", "VARCHAR(10) DEFAULT 'TWD'"),
+                ("last_active_expense_id", "INTEGER DEFAULT NULL")
+            ]),
             ("expenses", [
                 ("currency", "VARCHAR(10) DEFAULT 'TWD'"),
                 ("original_amount", "FLOAT DEFAULT 0"),

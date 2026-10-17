@@ -39,6 +39,9 @@ from app.flex_templates import (
     create_repayment_guide_flex,
     create_settlement_flex,
     create_expense_list_flex,
+    create_edit_expense_flex,
+    create_edit_payer_selection_flex,
+    create_edit_split_selection_flex,
 )
 
 
@@ -253,17 +256,45 @@ def parse_repayment(text: str, member_list: List[Member], default_curr: str = "T
     }
 
 
+INVALID_EXPENSE_UNIT_PATTERN = r'^(?:分鐘|分鍾|秒鐘|秒|小時|個小時|點鐘|點半|點|次|下|遍|回|趟|場|天|日|週|周|個月|年|個|隻|支|張|條|本|把|杯|碗|盤|瓶|罐|盒|包|袋|道|段|期|集|節|課|劑|顆|粒|朵|部|首|台|輛|棟|戶|間|歲|樓|號|度|公分|公尺|公里|公斤|公克|毫升|cm|km|kg|ml)'
+
+
 def parse_full_expense(text: str, member_list: List[Member], default_curr: str = "TWD") -> Optional[Dict[str, Any]]:
     """解析單一訊息記帳（支援 FULL, COUNT, PAYER_ONLY, SIMPLE 四種模式）"""
-    m = re.match(r"^([^\d:：\s]+.*?)\s*[:：]?\s*(\d+(?:\.\d+)?)(.*)$", text.strip())
-    if not m:
+    text_clean = text.strip()
+    candidates = list(re.finditer(r'(\d+(?:\.\d+)?)', text_clean))
+    if not candidates:
         return None
-    item = m.group(1).strip()
-    try:
-        amount = float(m.group(2))
-    except ValueError:
+
+    matched_candidate = None
+    for cand in reversed(candidates):
+        amt_str = cand.group(1)
+        start, end = cand.start(), cand.end()
+        item = text_clean[:start].rstrip(':： ')
+        rest = text_clean[end:].strip()
+
+        if not item:
+            continue
+        # 若 item 以「每」、「第」、「前」、「後」、「隔」結尾，非記帳項目（如「每5分鐘」、「第1次」）
+        if re.search(r'[每第前後隔]$', item):
+            continue
+        # 若緊接在數字後方為時間、次數、計量單位（如「5分鐘」、「3點」），非記帳金額
+        if re.match(INVALID_EXPENSE_UNIT_PATTERN, rest, re.I):
+            continue
+
+        try:
+            val = float(amt_str)
+            if val <= 0:
+                continue
+            matched_candidate = (item, val, rest)
+            break
+        except ValueError:
+            continue
+
+    if not matched_candidate:
         return None
-    rest = m.group(3).strip()
+
+    item, amount, rest = matched_candidate
 
     if not rest:
         return {
@@ -618,6 +649,275 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         reply_text(messaging_api, reply_token, "\n".join(lines))
         return
 
+    # (G-3) 支援直接文字修改支出內容（金額、名稱、付款人、分攤名單）
+    def get_target_expense(item_query: str = "") -> Optional[Expense]:
+        if item_query:
+            clean_q = item_query.strip()
+            exp = db.query(Expense).filter(
+                Expense.group_id == group.id,
+                Expense.is_deleted == False,
+                Expense.item_name.ilike(f"%{clean_q}%")
+            ).order_by(Expense.id.desc()).first()
+            if exp:
+                return exp
+        if group.last_active_expense_id:
+            exp = db.query(Expense).filter(
+                Expense.group_id == group.id,
+                Expense.id == group.last_active_expense_id,
+                Expense.is_deleted == False
+            ).first()
+            if exp:
+                return exp
+        return db.query(Expense).filter(
+            Expense.group_id == group.id,
+            Expense.is_deleted == False
+        ).order_by(Expense.id.desc()).first()
+
+    # Pattern 1: 修改金額
+    edit_amt_match = (
+        re.match(r"^(?:修改|改)\s*(.+?)\s*(?:的)?\s*(?:金額|價錢|費用)\s*[:：\s]?\s*(\d+(?:\.\d+)?)$", user_text) or
+        re.match(r"^(?:改金額|修改金額)\s*[:：\s]?\s*(\d+(?:\.\d+)?)$", user_text)
+    )
+    if edit_amt_match:
+        if len(edit_amt_match.groups()) == 2:
+            target_item = edit_amt_match.group(1).strip()
+            new_amount_raw = float(edit_amt_match.group(2))
+        else:
+            target_item = ""
+            new_amount_raw = float(edit_amt_match.group(1))
+
+        expense = get_target_expense(target_item)
+        if not expense:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到欲修改的支出紀錄！" if target_item else "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+
+        rate = expense.exchange_rate or 1.0
+        expense.original_amount = new_amount_raw
+        expense.amount = round(new_amount_raw * rate, 2)
+        group.last_active_expense_id = expense.id
+
+        split_count = max(expense.split_count or 1, 1)
+        per_person_base = round(expense.amount / split_count, 2)
+        for s in expense.splits:
+            s.amount_owed = per_person_base
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        per_person_orig = new_amount_raw / split_count
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+        split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            payer_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        display_cost = format_amount(expense.original_amount, expense.currency)
+        reply_flex(messaging_api, reply_token, f"✅ 已成功將【{expense.item_name}】金額修改為 {display_cost}！", card)
+        return
+
+    # Pattern 2: 修改付款人
+    edit_payer_match = (
+        re.match(r"^(?:修改|改)\s*(.+?)\s*(?:的)?\s*(?:付款人|誰付|誰出的|先付|代墊)\s*[:：\s]?\s*(.+)$", user_text) or
+        re.match(r"^(?:改付款人|修改付款人|更換付款人)\s*[:：\s]?\s*(.+)$", user_text)
+    )
+    if edit_payer_match:
+        if len(edit_payer_match.groups()) == 2:
+            target_item = edit_payer_match.group(1).strip()
+            payer_str = edit_payer_match.group(2).strip()
+        else:
+            target_item = ""
+            payer_str = edit_payer_match.group(1).strip()
+
+        expense = get_target_expense(target_item)
+        if not expense:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到欲修改的支出紀錄！" if target_item else "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+
+        new_payer = find_member_fuzzy(payer_str, current_members)
+        if not new_payer:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到名為【{payer_str}】的成員，請先確認成員名單！")
+            return
+
+        expense.payer_id = new_payer.id
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        split_count = max(expense.split_count or 1, 1)
+        per_person_orig = orig_amt / split_count
+        split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            new_payer.display_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已成功將【{expense.item_name}】付款人修改為【{new_payer.display_name}】！", card)
+        return
+
+    # Pattern 3: 修改項目名稱
+    edit_name_match = (
+        re.match(r"^(?:修改|改)\s*(.+?)\s*(?:的)?\s*(?:名稱|項目|品項)\s*[:：\s]?\s*(.+)$", user_text) or
+        re.match(r"^(?:改名稱|修改名稱)\s*[:：\s]?\s*(.+)$", user_text)
+    )
+    if edit_name_match:
+        if len(edit_name_match.groups()) == 2:
+            target_item = edit_name_match.group(1).strip()
+            new_name = edit_name_match.group(2).strip()
+        else:
+            target_item = ""
+            new_name = edit_name_match.group(1).strip()
+
+        expense = get_target_expense(target_item)
+        if not expense:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到欲修改的支出紀錄！" if target_item else "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+
+        old_name = expense.item_name
+        expense.item_name = new_name
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        split_count = max(expense.split_count or 1, 1)
+        per_person_orig = orig_amt / split_count
+        split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            payer_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已成功將【{old_name}】更名為【{new_name}】！", card)
+        return
+
+    # Pattern 4: 修改分攤夥伴名單
+    edit_split_match = (
+        re.match(r"^(?:修改|改)\s*(.+?)\s*(?:的)?\s*(?:分攤|均分|分帳|夥伴)\s*[:：\s]?\s*(.+)$", user_text) or
+        re.match(r"^(?:改分攤|修改分攤|重新分攤)\s*[:：\s]?\s*(.+)$", user_text)
+    )
+    if edit_split_match:
+        if len(edit_split_match.groups()) == 2:
+            target_item = edit_split_match.group(1).strip()
+            splits_raw = edit_split_match.group(2).strip()
+        else:
+            target_item = ""
+            splits_raw = edit_split_match.group(1).strip()
+
+        expense = get_target_expense(target_item)
+        if not expense:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到欲修改的支出紀錄！" if target_item else "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+
+        if any(k in splits_raw for k in ["全員", "全體", "大家", "全部", "每人", "所有人"]):
+            target_members = current_members
+            is_all = True
+        else:
+            target_members = parse_split_names(splits_raw, current_members)
+            is_all = (len(target_members) == len(current_members))
+
+        if not target_members:
+            reply_text(messaging_api, reply_token, f"⚠️ 找不到符合的分攤夥伴【{splits_raw}】，請確認成員名單！")
+            return
+
+        split_count = len(target_members)
+        db.query(ExpenseSplit).filter(ExpenseSplit.expense_id == expense.id).delete()
+        expense.split_count = split_count
+        expense.split_type = "EQUAL_ALL" if is_all else f"CUSTOM_{split_count}"
+        per_person_base = round(expense.amount / split_count, 2)
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        for m in target_members:
+            db.add(ExpenseSplit(expense_id=expense.id, member_id=m.id, amount_owed=per_person_base))
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        per_person_orig = orig_amt / split_count
+        names_str = "、".join(m.display_name for m in target_members)
+        split_desc = f"全體 {split_count} 人均分（每人 {format_amount(per_person_orig, curr)}）" if is_all else f"{names_str} 共 {split_count} 人均分（每人 {format_amount(per_person_orig, curr)}）"
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            payer_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已成功更新【{expense.item_name}】分攤夥伴！", card)
+        return
+
+    # Pattern 5: 支援若剛在點選修改金額後直接傳送純數字（如「800」）
+    if re.match(r"^\d+(?:\.\d+)?$", user_text) and group.last_active_expense_id:
+        new_amt = float(user_text)
+        expense = db.query(Expense).filter(
+            Expense.group_id == group.id,
+            Expense.id == group.last_active_expense_id,
+            Expense.is_deleted == False
+        ).first()
+        if expense:
+            rate = expense.exchange_rate or 1.0
+            expense.original_amount = new_amt
+            expense.amount = round(new_amt * rate, 2)
+            split_count = max(expense.split_count or 1, 1)
+            per_person_base = round(expense.amount / split_count, 2)
+            for s in expense.splits:
+                s.amount_owed = per_person_base
+            db.commit()
+
+            curr = expense.currency or (group.base_currency or "TWD")
+            per_person_orig = new_amt / split_count
+            payer_name = expense.payer.display_name if expense.payer else "未知"
+            split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+            now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+            card = create_receipt_flex(
+                expense.id,
+                expense.item_name,
+                expense.amount,
+                payer_name,
+                split_desc,
+                now_str,
+                currency=expense.currency,
+                original_amount=expense.original_amount,
+                rate=expense.exchange_rate
+            )
+            display_cost = format_amount(expense.original_amount, expense.currency)
+            reply_flex(messaging_api, reply_token, f"✅ 已成功將【{expense.item_name}】金額修改為 {display_cost}！", card)
+            return
+
     # (H) 指定成員均分文字指令（支援草稿等待時輸入「佳欣、南廷、園子、玫璇 均分」或「佳欣 南廷 園子 玫璇」）
     waiting_draft = db.query(DraftExpense).filter(
         DraftExpense.line_group_id == line_group_id
@@ -798,6 +1098,7 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
 
             if waiting_draft:
                 db.delete(waiting_draft)
+            group.last_active_expense_id = expense.id
             db.commit()
 
             now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
@@ -843,6 +1144,7 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
                     db.add(ExpenseSplit(expense_id=expense.id, member_id=m.id, amount_owed=per_person_base_amount))
                 if waiting_draft:
                     db.delete(waiting_draft)
+                group.last_active_expense_id = expense.id
                 db.commit()
 
                 now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
@@ -1061,6 +1363,7 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
 
         # 清除 Draft
         db.delete(draft)
+        group.last_active_expense_id = expense.id
         db.commit()
 
         # 發送記帳成功收據卡片
@@ -1171,6 +1474,7 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
             db.add(split)
 
         db.delete(draft)
+        group.last_active_expense_id = expense.id
         db.commit()
 
         now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
@@ -1230,6 +1534,7 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
         db.add(split)
 
         db.delete(draft)
+        group.last_active_expense_id = expense.id
         db.commit()
 
         now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
@@ -1303,6 +1608,258 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
                 reply_text(messaging_api, reply_token, f"🗑️ 已成功撤銷【{expense.item_name}】（NT$ {int(expense.amount):,}）！")
         else:
             reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄。")
+        return
+
+    # 4.5 編輯支出功能（從查看明細點選「✏️ 修改」）
+    if action == "edit_expense_menu":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄，可能已被刪除！")
+            return
+
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        base_curr = group.base_currency or "TWD"
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+        split_desc = f"{expense.split_count}人均分"
+        if expense.splits:
+            names = [s.member.display_name for s in expense.splits if s.member]
+            all_m_count = len(group.members)
+            if len(names) == all_m_count and all_m_count > 0:
+                split_desc = f"全體 {len(names)} 人均分"
+            else:
+                split_desc = f"{'、'.join(names)} ({len(names)}人)"
+
+        exp_data = {
+            "id": expense.id,
+            "item_name": expense.item_name,
+            "amount": expense.amount,
+            "original_amount": expense.original_amount if expense.original_amount else expense.amount,
+            "currency": expense.currency or base_curr,
+            "exchange_rate": expense.exchange_rate or 1.0,
+            "payer_name": payer_name,
+            "payer_id": expense.payer_id,
+            "split_desc": split_desc,
+            "split_count": expense.split_count,
+            "split_type": expense.split_type
+        }
+        reply_flex(messaging_api, reply_token, f"✏️ 編輯支出：{expense.item_name}", create_edit_expense_flex(exp_data, base_curr))
+        return
+
+    if action == "edit_prompt_amount":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄！")
+            return
+        group.last_active_expense_id = expense.id
+        db.commit()
+        curr = expense.currency or (group.base_currency or "TWD")
+        cur_amt_str = format_amount(expense.original_amount or expense.amount, curr)
+        reply_text(
+            messaging_api,
+            reply_token,
+            f"✏️ 請輸入【{expense.item_name}】的新金額（目前為 {cur_amt_str}）：\n\n"
+            f"👉 例如直接傳送：「改金額 500」或「500」"
+        )
+        return
+
+    if action == "edit_prompt_name":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄！")
+            return
+        group.last_active_expense_id = expense.id
+        db.commit()
+        reply_text(
+            messaging_api,
+            reply_token,
+            f"✏️ 請輸入【{expense.item_name}】的新名稱：\n\n"
+            f"👉 例如直接傳送：「改名稱 泰式奶茶」"
+        )
+        return
+
+    if action == "edit_show_payer":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄！")
+            return
+        group.last_active_expense_id = expense.id
+        db.commit()
+        members = db.query(Member).filter(Member.group_id == group.id).all()
+        member_dicts = [{"id": m.id, "name": m.display_name} for m in members]
+        reply_flex(
+            messaging_api,
+            reply_token,
+            f"👤 更換付款人（{expense.item_name}）",
+            create_edit_payer_selection_flex(expense.id, expense.item_name, member_dicts, expense.payer_id)
+        )
+        return
+
+    if action == "do_edit_payer":
+        expense_id = int(params.get("expense_id", 0))
+        payer_id = int(params.get("payer_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        new_payer = db.query(Member).filter(Member.id == payer_id).first()
+        if not expense or not new_payer:
+            reply_text(messaging_api, reply_token, "⚠️ 操作失敗，找不到該筆支出或成員！")
+            return
+
+        expense.payer_id = new_payer.id
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        split_desc = f"{expense.split_count}人均分"
+        if expense.splits:
+            names = [s.member.display_name for s in expense.splits if s.member]
+            all_m_count = len(group.members)
+            if len(names) == all_m_count and all_m_count > 0:
+                split_desc = f"全體 {len(names)} 人均分"
+            else:
+                split_desc = f"{'、'.join(names)} ({len(names)}人)"
+
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            new_payer.display_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已將【{expense.item_name}】付款人更改為【{new_payer.display_name}】", card)
+        return
+
+    if action == "edit_show_splits":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄！")
+            return
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        members = db.query(Member).filter(Member.group_id == group.id).all()
+        member_dicts = [{"id": m.id, "name": m.display_name} for m in members]
+        current_split_member_ids = [s.member_id for s in expense.splits]
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        amt_str = format_amount(orig_amt, curr)
+
+        from app.config import get_base_url
+        base_url = get_base_url()
+
+        reply_flex(
+            messaging_api,
+            reply_token,
+            f"🤝 重新設定分攤（{expense.item_name}）",
+            create_edit_split_selection_flex(
+                expense.id,
+                expense.item_name,
+                amt_str,
+                member_dicts,
+                current_split_member_ids,
+                base_url=base_url
+            )
+        )
+        return
+
+    if action == "do_edit_split_all":
+        expense_id = int(params.get("expense_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄！")
+            return
+
+        members = db.query(Member).filter(Member.group_id == group.id).all()
+        split_count = len(members)
+        if split_count == 0:
+            reply_text(messaging_api, reply_token, "⚠️ 群組尚無任何成員！")
+            return
+
+        db.query(ExpenseSplit).filter(ExpenseSplit.expense_id == expense.id).delete()
+        expense.split_count = split_count
+        expense.split_type = "EQUAL_ALL"
+        per_person_base = round(expense.amount / split_count, 2)
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        for m in members:
+            db.add(ExpenseSplit(
+                expense_id=expense.id,
+                member_id=m.id,
+                amount_owed=per_person_base
+            ))
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        per_person_orig = orig_amt / split_count
+        split_desc = f"全體 {split_count} 人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            payer_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已將【{expense.item_name}】改為全體均分！", card)
+        return
+
+    if action == "do_edit_split_single":
+        expense_id = int(params.get("expense_id", 0))
+        member_id = int(params.get("member_id", 0))
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        target_m = db.query(Member).filter(Member.id == member_id).first()
+        if not expense or not target_m:
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出或成員！")
+            return
+
+        db.query(ExpenseSplit).filter(ExpenseSplit.expense_id == expense.id).delete()
+        expense.split_count = 1
+        expense.split_type = "SINGLE_MEMBER"
+        group.last_active_expense_id = expense.id
+        db.commit()
+
+        db.add(ExpenseSplit(
+            expense_id=expense.id,
+            member_id=target_m.id,
+            amount_owed=expense.amount
+        ))
+        db.commit()
+
+        curr = expense.currency or (group.base_currency or "TWD")
+        orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+        split_desc = f"由 {target_m.display_name} 獨自全額承擔 ({format_amount(orig_amt, curr)})"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+        payer_name = expense.payer.display_name if expense.payer else "未知"
+        card = create_receipt_flex(
+            expense.id,
+            expense.item_name,
+            expense.amount,
+            payer_name,
+            split_desc,
+            now_str,
+            currency=expense.currency,
+            original_amount=expense.original_amount,
+            rate=expense.exchange_rate
+        )
+        reply_flex(messaging_api, reply_token, f"✅ 已將【{expense.item_name}】改由 {target_m.display_name} 全額承擔！", card)
         return
 
     # 5.5 一鍵登記小額還款（從結算卡片點選）

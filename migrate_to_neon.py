@@ -1,5 +1,9 @@
 import os
 import sys
+import io
+
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.models import Base, GroupTrip, Member, Expense, ExpenseSplit, CurrencyRate, DraftExpense

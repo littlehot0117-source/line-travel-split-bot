@@ -19,12 +19,21 @@ elif DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("p
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
-APP_BASE_URL = os.getenv("APP_BASE_URL", "https://mention-enlarge-borders-network.trycloudflare.com")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+APP_BASE_URL = (
+    os.getenv("APP_BASE_URL")
+    or (RENDER_EXTERNAL_URL.rstrip("/") if RENDER_EXTERNAL_URL else "")
+    or "https://line-travel-split-bot.onrender.com"
+)
 
 def set_base_url(url: str):
     global APP_BASE_URL
     if url and url.startswith("http"):
+        # 非本機連線強制升級為 https，符合 LINE 限制
+        if not ("localhost" in url or "127.0.0.1" in url) and url.startswith("http://"):
+            url = "https://" + url[7:]
         APP_BASE_URL = url.rstrip("/")
 
 def get_base_url() -> str:
     return APP_BASE_URL
+

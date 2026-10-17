@@ -103,7 +103,7 @@ def get_member_picker_page(
     if host:
         set_base_url(f"{proto}://{host}")
 
-    if expense_id:
+    if expense_id and expense_id > 0:
         expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
         if not expense:
             return HTMLResponse("""
@@ -125,6 +125,9 @@ def get_member_picker_page(
         eff_draft_id = 0
         eff_expense_id = expense.id
         eff_payer_id = expense.payer_id or 0
+        eff_item_name = expense.item_name
+        current_split_member_ids = [s.member_id for s in expense.splits]
+        page_mode = "edit"
     else:
         draft = db.query(DraftExpense).filter(DraftExpense.id == draft_id).first()
         payer = db.query(Member).filter(Member.id == payer_id).first()
@@ -147,18 +150,27 @@ def get_member_picker_page(
         eff_draft_id = draft.id or 0
         eff_expense_id = 0
         eff_payer_id = payer.id
+        eff_item_name = draft.item_name
+        current_split_member_ids = []
+        page_mode = "create"
 
     member_cards_html = ""
     for m in members:
+        is_sel = m.id in current_split_member_ids
+        cls_name = "member-btn selected" if is_sel else "member-btn"
+        icon_str = "✅" if is_sel else "⬜"
         member_cards_html += f"""
-        <div class="member-btn" id="mem-{m.id}" onclick="toggleMember({m.id})">
-            <span class="icon">⬜</span>
+        <div class="{cls_name}" id="mem-{m.id}" onclick="toggleMember({m.id})">
+            <span class="icon">{icon_str}</span>
             <span class="name">{m.display_name}</span>
         </div>
         """
 
     target_title = f"👉 請勾選 {target_count} 位夥伴" if target_count > 0 else "👉 請自由勾選分攤夥伴"
     btn_init_text = f"請選滿 {target_count} 位夥伴" if target_count > 0 else "請至少勾選 1 位夥伴"
+    import json
+    initial_ids_json = json.dumps(current_split_member_ids)
+    success_title = "分攤修改成功！" if page_mode == "edit" else "記帳成功！"
 
     html_content = f"""
 <!DOCTYPE html>
@@ -214,8 +226,8 @@ def get_member_picker_page(
     <div class="card">
         <div class="header">
             <div class="title">🎯 挑選均分夥伴</div>
-            <div class="item-info">📝 {draft.item_name}（{amount_str}）</div>
-            <div class="payer-info">👤 由 {payer.display_name} 先代墊</div>
+            <div class="item-info">📝 {eff_item_name}（{amount_str}）</div>
+            <div class="payer-info">👤 由 {payer_display} 先代墊</div>
         </div>
 
         <div class="status-box" id="status-box">
@@ -236,11 +248,12 @@ def get_member_picker_page(
 
     <div class="overlay" id="overlay">
         <div style="font-size: 3.5rem; margin-bottom: 12px;">🎉</div>
-        <h2 style="color: #15803D; margin-bottom: 8px;">記帳成功！</h2>
+        <h2 style="color: #15803D; margin-bottom: 8px;">{success_title}</h2>
         <p style="color: #64748B; font-size: 0.95rem; margin-bottom: 24px;">收據已自動送出至 LINE 群組</p>
         <button onclick="closeApp()" style="padding: 12px 32px; border-radius: 9999px; border: none; background: #0284C7; color: #fff; font-size: 1rem; font-weight: bold; cursor: pointer;">
             返回 LINE 聊天室
         </button>
+        <p style="color: #94A3B8; font-size: 0.8rem; margin-top: 14px;">（若視窗未自動關閉，可點擊左上角 ✕ 返回聊天室）</p>
     </div>
 
     <script>
@@ -250,7 +263,7 @@ def get_member_picker_page(
         const targetCount = {target_count};
         const totalAmount = {orig_amt};
         const currency = "{curr}";
-        let selectedIds = [];
+        let selectedIds = {initial_ids_json};
 
         function toggleMember(id) {{
             const el = document.getElementById('mem-' + id);
@@ -375,6 +388,9 @@ def get_member_picker_page(
             }} catch(e) {{}}
             window.close();
         }}
+
+        // 初始化更新畫面
+        updateUI();
     </script>
 </body>
 </html>
@@ -385,7 +401,7 @@ def get_member_picker_page(
 @app.post("/api/confirm_picker")
 def api_confirm_picker(req: ConfirmPickerRequest, db: Session = Depends(get_db)):
     """API: 內嵌網頁勾選完成後送出分攤"""
-    if req.expense_id:
+    if req.expense_id and req.expense_id > 0:
         expense = db.query(Expense).filter(Expense.id == req.expense_id, Expense.is_deleted == False).first()
         if not expense:
             raise HTTPException(status_code=404, detail="該筆支出紀錄不存在或已被刪除")

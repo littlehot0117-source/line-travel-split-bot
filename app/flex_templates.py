@@ -1962,6 +1962,10 @@ def create_edit_split_selection_flex(
     })
 
     # 2. 同頁挑選（若有 base_url）
+    if not base_url:
+        from app.config import get_base_url
+        base_url = get_base_url()
+
     if base_url:
         buttons.append({
             "type": "button",

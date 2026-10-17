@@ -322,54 +322,86 @@ def create_payer_selection_flex(
     original_amount: float = None,
     rate: float = 1.0
 ) -> Dict[str, Any]:
-    """選定誰付錢卡片（支援多幣別按鈕點選）"""
+    """選定誰付錢卡片（雙欄均分排版，降低卡片高度）"""
     from app.currency import format_amount
     orig_amt = original_amount if original_amount else amount
     amount_str = format_amount(orig_amt, currency)
     sub_amount_str = f"≈ NT$ {int(round(amount)):,} (匯率 {rate})" if currency != "TWD" else ""
 
-    member_buttons = []
+    # 成員按鈕採雙欄均分排版，降低卡片垂直高度
+    member_rows = []
+    curr_row = []
     for m in members:
-        member_buttons.append({
+        btn = {
             "type": "button",
             "style": "secondary",
             "height": "sm",
+            "flex": 1,
             "action": {
                 "type": "postback",
                 "label": f"👤 {m['name']}",
                 "data": f"action=select_payer&draft_id={draft_id}&payer_id={m['id']}"
             }
+        }
+        curr_row.append(btn)
+        if len(curr_row) == 2:
+            member_rows.append({
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "contents": curr_row
+            })
+            curr_row = []
+
+    if curr_row:
+        curr_row.append({"type": "filler"})
+        member_rows.append({
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": curr_row
         })
 
-    member_buttons.append({
-        "type": "button",
-        "style": "link",
-        "height": "sm",
-        "color": "#0284C7",
-        "action": {
-            "type": "postback",
-            "label": "➕ 旅伴不在選單中？新增成員",
-            "data": f"action=prompt_add_member&draft_id={draft_id}",
-            "displayText": "新增成員"
-        }
-    })
-
-    member_buttons.append({
-        "type": "button",
-        "style": "link",
-        "height": "sm",
-        "color": "#EF4444",
-        "action": {
-            "type": "postback",
-            "label": "❌ 取消記帳",
-            "data": f"action=cancel_draft&draft_id={draft_id}",
-            "displayText": "取消記帳"
-        }
-    })
+    # 底部快捷按鈕：雙欄均分（新增成員 + 取消記帳）
+    bottom_buttons_box = {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "sm",
+        "margin": "xs",
+        "contents": [
+            {
+                "type": "button",
+                "style": "link",
+                "height": "sm",
+                "color": "#0284C7",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "➕ 新增成員",
+                    "data": f"action=prompt_add_member&draft_id={draft_id}",
+                    "displayText": "新增成員"
+                }
+            },
+            {
+                "type": "button",
+                "style": "link",
+                "height": "sm",
+                "color": "#EF4444",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "❌ 取消記帳",
+                    "data": f"action=cancel_draft&draft_id={draft_id}",
+                    "displayText": "取消記帳"
+                }
+            }
+        ]
+    }
+    member_rows.append(bottom_buttons_box)
 
     amount_box_contents = [
         {"type": "text", "text": "💰 金額", "color": "#64748B", "size": "sm", "flex": 2},
-        {"type": "text", "text": amount_str, "weight": "bold", "color": "#16A34A", "size": "lg", "flex": 5}
+        {"type": "text", "text": amount_str, "weight": "bold", "color": "#16A34A", "size": "md", "flex": 5}
     ]
 
     body_contents = [
@@ -399,20 +431,20 @@ def create_payer_selection_flex(
         })
 
     body_contents.extend([
-        {"type": "separator", "margin": "md"},
+        {"type": "separator", "margin": "sm"},
         {
             "type": "text",
             "text": "請點選代墊付款的人：",
             "size": "xs",
             "color": "#94A3B8",
-            "margin": "md"
+            "margin": "sm"
         },
         {
             "type": "box",
             "layout": "vertical",
-            "spacing": "sm",
-            "margin": "sm",
-            "contents": member_buttons
+            "spacing": "xs",
+            "margin": "xs",
+            "contents": member_rows
         }
     ])
 
@@ -422,6 +454,7 @@ def create_payer_selection_flex(
             "type": "box",
             "layout": "vertical",
             "backgroundColor": "#F8FAFC",
+            "paddingAll": "12px",
             "contents": [
                 {
                     "type": "text",
@@ -478,47 +511,79 @@ def create_split_selection_flex(
         }
     })
 
-    # 2. 人數均分按鈕 (2人、3人、4人...) -> 點擊直接開啟同頁勾選畫面（零洗版）
+    # 2. 人數均分按鈕 (2人、3人、4人...) -> 雙欄均分排列
+    count_rows = []
+    curr_count_row = []
     for count in range(2, min(member_count, 6)):
         per_person = orig_amt / count
         per_str = format_amount(per_person, currency)
-        buttons.append({
+        btn = {
             "type": "button",
             "style": "secondary",
             "height": "sm",
+            "flex": 1,
             "action": {
                 "type": "uri",
-                "label": f"📱 {count} 人均分（同頁勾選・每人 {per_str}）",
+                "label": f"📱 {count}人均分 ({per_str})",
                 "uri": f"{base_url}/picker?draft_id={draft_id}&payer_id={payer_id}&target_count={count}"
             }
+        }
+        curr_count_row.append(btn)
+        if len(curr_count_row) == 2:
+            count_rows.append({
+                "type": "box",
+                "layout": "horizontal",
+                "spacing": "sm",
+                "contents": curr_count_row
+            })
+            curr_count_row = []
+
+    if curr_count_row:
+        curr_count_row.append({"type": "filler"})
+        count_rows.append({
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": curr_count_row
         })
 
-    # 3. 指定特定成員均分 (自由勾選) -> 同樣直接開啟同頁勾選畫面
-    buttons.append({
-        "type": "button",
-        "style": "link",
-        "color": "#0284C7",
-        "height": "sm",
-        "action": {
-            "type": "uri",
-            "label": "🎯 自由勾選分攤夥伴（同頁選人）",
-            "uri": f"{base_url}/picker?draft_id={draft_id}&payer_id={payer_id}&target_count=0"
-        }
-    })
+    buttons.extend(count_rows)
 
-    # 4. 取消此筆記帳
-    buttons.append({
-        "type": "button",
-        "style": "link",
-        "color": "#EF4444",
-        "height": "sm",
-        "action": {
-            "type": "postback",
-            "label": "❌ 取消記帳",
-            "data": f"action=cancel_draft&draft_id={draft_id}",
-            "displayText": "取消記帳"
-        }
-    })
+    # 3. 底部快捷按鈕：雙欄均分（自由勾選 + 取消記帳）
+    bottom_action_box = {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "sm",
+        "margin": "xs",
+        "contents": [
+            {
+                "type": "button",
+                "style": "link",
+                "color": "#0284C7",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "uri",
+                    "label": "🎯 自由勾選",
+                    "uri": f"{base_url}/picker?draft_id={draft_id}&payer_id={payer_id}&target_count=0"
+                }
+            },
+            {
+                "type": "button",
+                "style": "link",
+                "color": "#EF4444",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "❌ 取消記帳",
+                    "data": f"action=cancel_draft&draft_id={draft_id}",
+                    "displayText": "取消記帳"
+                }
+            }
+        ]
+    }
+    buttons.append(bottom_action_box)
 
     split_body_contents = [
         {

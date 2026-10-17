@@ -1,6 +1,7 @@
 import re
 import difflib
 import urllib.parse
+import time
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -79,6 +80,49 @@ def get_or_create_group(db: Session, line_group_id: str) -> GroupTrip:
         db.commit()
         db.refresh(group)
     return group
+
+
+WAITING_STATES: Dict[str, Dict[str, Any]] = {}
+WAITING_STATE_TIMEOUT = 300  # 5 分鐘逾期防護
+
+
+def set_waiting_state(line_group_id: str, user_id: str, action: str, data: Dict[str, Any]):
+    """設定使用者的暫存等待輸入狀態（例如等待輸入新項目名稱或新金額）"""
+    key = f"{line_group_id}:{user_id}" if (line_group_id and user_id) else (line_group_id or user_id or "default")
+    data_copy = dict(data)
+    data_copy["action"] = action
+    data_copy["timestamp"] = time.time()
+    WAITING_STATES[key] = data_copy
+
+
+def get_waiting_state(line_group_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """取得使用者的暫存等待狀態，逾期則自動清除"""
+    now = time.time()
+    key = f"{line_group_id}:{user_id}" if (line_group_id and user_id) else (line_group_id or user_id or "default")
+    state = WAITING_STATES.get(key)
+    if not state and line_group_id:
+        state = WAITING_STATES.get(line_group_id)
+        if state:
+            key = line_group_id
+
+    if not state:
+        return None
+
+    if now - state.get("timestamp", 0) > WAITING_STATE_TIMEOUT:
+        WAITING_STATES.pop(key, None)
+        return None
+
+    return state
+
+
+def clear_waiting_state(line_group_id: str, user_id: str):
+    """清除等待輸入狀態"""
+    if line_group_id and user_id:
+        WAITING_STATES.pop(f"{line_group_id}:{user_id}", None)
+    if line_group_id:
+        WAITING_STATES.pop(line_group_id, None)
+    if user_id:
+        WAITING_STATES.pop(user_id, None)
 
 
 def get_sender_display_name(api_client: ApiClient, event) -> str:
@@ -256,7 +300,7 @@ def parse_repayment(text: str, member_list: List[Member], default_curr: str = "T
     }
 
 
-INVALID_EXPENSE_UNIT_PATTERN = r'^(?:分鐘|分鍾|秒鐘|秒|小時|個小時|點鐘|點半|點|次|下|遍|回|趟|場|天|日|週|周|個月|年|個|隻|支|張|條|本|把|杯|碗|盤|瓶|罐|盒|包|袋|道|段|期|集|節|課|劑|顆|粒|朵|部|首|台|輛|棟|戶|間|歲|樓|號|度|公分|公尺|公里|公斤|公克|毫升|cm|km|kg|ml)'
+INVALID_EXPENSE_UNIT_PATTERN = r'^(?:分鐘|分鍾|秒鐘|秒|小時|個小時|點鐘|點半|點|次|下|遍|回|趟|場|天|日|號|週|周|月|個月|年|個|隻|支|張|條|本|把|杯|碗|盤|瓶|罐|盒|包|袋|道|段|期|集|節|課|劑|顆|粒|朵|部|首|台|輛|棟|戶|間|歲|樓|度|公分|公尺|公里|公斤|公克|毫升|cm|km|kg|ml)'
 
 
 def parse_full_expense(text: str, member_list: List[Member], default_curr: str = "TWD") -> Optional[Dict[str, Any]]:
@@ -275,11 +319,29 @@ def parse_full_expense(text: str, member_list: List[Member], default_curr: str =
 
         if not item:
             continue
+
+        # 排除日期格式中的數字（例如 10/23、2024/10/23、10-23 或帶空格 10 / 23）
+        # 1. 前方以 '/' 或 '-' 結尾且前有數字（如 10/23 中的 23）
+        prefix_part = text_clean[:start].rstrip()
+        if prefix_part.endswith(('/', '-')) and re.search(r'\d\s*[/\\-]$', prefix_part):
+            continue
+        # 2. 後方以 '/' 或 '-' 開頭且後有數字（如 10/23 中的 10）
+        suffix_part = text_clean[end:].lstrip()
+        if re.match(r'^[/\\-]\s*\d', suffix_part):
+            continue
+        # 3. item 結尾為 '/' 或 '-'（如 "10/"）
+        if item.endswith(('/', '-')):
+            continue
+
         # 若 item 以「每」、「第」、「前」、「後」、「隔」結尾，非記帳項目（如「每5分鐘」、「第1次」）
         if re.search(r'[每第前後隔]$', item):
             continue
         # 若緊接在數字後方為時間、次數、計量單位（如「5分鐘」、「3點」），非記帳金額
         if re.match(INVALID_EXPENSE_UNIT_PATTERN, rest, re.I):
+            continue
+
+        # 排除以常見指令開頭的品項（避免指令文字被誤判為記帳）
+        if re.match(r'^(?:取消|修改|改名稱|改金額|改付款人|改分攤|刪除|結算|明細|成員|新增成員|設定|查看)', item):
             continue
 
         try:
@@ -416,6 +478,146 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
     user_id = getattr(event.source, "user_id", "")
 
     group = get_or_create_group(db, line_group_id)
+
+    def get_target_expense(item_query: str = "") -> Optional[Expense]:
+        if item_query:
+            clean_q = item_query.strip()
+            exp = db.query(Expense).filter(
+                Expense.group_id == group.id,
+                Expense.is_deleted == False,
+                Expense.item_name.ilike(f"%{clean_q}%")
+            ).order_by(Expense.id.desc()).first()
+            if exp:
+                return exp
+        if group.last_active_expense_id:
+            exp = db.query(Expense).filter(
+                Expense.group_id == group.id,
+                Expense.id == group.last_active_expense_id,
+                Expense.is_deleted == False
+            ).first()
+            if exp:
+                return exp
+        return db.query(Expense).filter(
+            Expense.group_id == group.id,
+            Expense.is_deleted == False
+        ).order_by(Expense.id.desc()).first()
+
+    # 0. 取消/放棄目前操作（包含清除等待輸入狀態與草稿記帳）
+    if user_text.lower() in ["取消", "放棄", "算了", "cancel", "exit", "q", "關閉"]:
+        had_waiting = get_waiting_state(line_group_id, user_id) is not None
+        clear_waiting_state(line_group_id, user_id)
+
+        drafts = db.query(DraftExpense).filter(DraftExpense.line_group_id == line_group_id).all()
+        had_drafts = len(drafts) > 0
+        if had_drafts:
+            for d in drafts:
+                db.delete(d)
+            db.commit()
+
+        if had_waiting or had_drafts:
+            reply_text(messaging_api, reply_token, "👌 已為您取消目前的記帳或修改操作！")
+        else:
+            reply_text(messaging_api, reply_token, "👌 目前沒有正在進行中的記帳或修改操作喔。")
+        return
+
+    # 全域導覽或功能指令：若使用者輸入此類指令，自動清除等待修改狀態，避免使用者被困在等待輸入中
+    global_commands = [
+        "指令", "所有指令", "指令表", "指令大全", "說明", "使用說明", "教學", "怎麼用", "help", "commands",
+        "選單", "功能", "主選單", "目錄", "menu",
+        "結算", "查看結算", "算帳", "還款", "小額還款", "還款教學", "登記還款", "還款指南", "怎麼還款",
+        "明細", "查看明細", "帳務明細", "成員名單", "查看成員", "旅伴",
+        "清空紀錄", "重新開始", "新旅程", "歸零", "設定幣別", "幣別", "當下幣別", "切換幣別", "預設幣別", "換幣別",
+        "匯率表", "查看匯率", "匯率清單"
+    ]
+    if user_text.lower() in global_commands or re.match(r"^(?:新增成員|新增夥伴|旅伴|設定匯率|匯率設定)\s*", user_text):
+        clear_waiting_state(line_group_id, user_id)
+
+    # 0.5 處理等待輸入狀態（WAITING_STATES，例如修改名稱、修改金額）
+    waiting_state = get_waiting_state(line_group_id, user_id)
+    if waiting_state:
+        w_action = waiting_state.get("action")
+        expense_id = waiting_state.get("expense_id")
+        expense = db.query(Expense).filter(Expense.id == expense_id, Expense.is_deleted == False).first()
+        if not expense:
+            clear_waiting_state(line_group_id, user_id)
+            reply_text(messaging_api, reply_token, "⚠️ 找不到該筆支出紀錄，可能已被刪除！")
+            return
+
+        if w_action == "edit_name":
+            # 去除常見修改前綴
+            new_name = re.sub(r"^(?:改名稱|修改名稱|更名|改名|修改)\s*[:：\s]?", "", user_text).strip()
+            if not new_name:
+                reply_text(messaging_api, reply_token, "⚠️ 請輸入有效的新名稱，或傳送「取消」放棄修改。")
+                return
+
+            old_name = expense.item_name
+            expense.item_name = new_name
+            group.last_active_expense_id = expense.id
+            db.commit()
+            clear_waiting_state(line_group_id, user_id)
+
+            curr = expense.currency or (group.base_currency or "TWD")
+            orig_amt = expense.original_amount if (expense.original_amount and expense.original_amount > 0) else expense.amount
+            split_count = max(expense.split_count or 1, 1)
+            per_person_orig = orig_amt / split_count
+            split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+            payer_name = expense.payer.display_name if expense.payer else "未知"
+
+            now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+            card = create_receipt_flex(
+                expense.id,
+                expense.item_name,
+                expense.amount,
+                payer_name,
+                split_desc,
+                now_str,
+                currency=expense.currency,
+                original_amount=expense.original_amount,
+                rate=expense.exchange_rate
+            )
+            reply_flex(messaging_api, reply_token, f"✅ 已成功將【{old_name}】更名為【{new_name}】！", card)
+            return
+
+        elif w_action == "edit_amount":
+            clean_amt = re.sub(r"^(?:改金額|修改金額|金額)\s*[:：\s]?", "", user_text).strip().replace(",", "")
+            amt_match = re.search(r"(\d+(?:\.\d+)?)", clean_amt)
+            if not amt_match or float(amt_match.group(1)) <= 0:
+                reply_text(messaging_api, reply_token, "⚠️ 請輸入正確的數字金額（例如「500」），或傳送「取消」放棄修改。")
+                return
+
+            new_amt = float(amt_match.group(1))
+            rate = expense.exchange_rate or 1.0
+            expense.original_amount = new_amt
+            expense.amount = round(new_amt * rate, 2)
+            group.last_active_expense_id = expense.id
+
+            split_count = max(expense.split_count or 1, 1)
+            per_person_base = round(expense.amount / split_count, 2)
+            for s in expense.splits:
+                s.amount_owed = per_person_base
+            db.commit()
+            clear_waiting_state(line_group_id, user_id)
+
+            curr = expense.currency or (group.base_currency or "TWD")
+            per_person_orig = new_amt / split_count
+            payer_name = expense.payer.display_name if expense.payer else "未知"
+            split_desc = f"{split_count}人均分（每人 {format_amount(per_person_orig, curr)}）"
+
+            now_str = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+            card = create_receipt_flex(
+                expense.id,
+                expense.item_name,
+                expense.amount,
+                payer_name,
+                split_desc,
+                now_str,
+                currency=expense.currency,
+                original_amount=expense.original_amount,
+                rate=expense.exchange_rate
+            )
+            display_cost = format_amount(expense.original_amount, expense.currency)
+            reply_flex(messaging_api, reply_token, f"✅ 已成功將【{expense.item_name}】金額修改為 {display_cost}！", card)
+            return
 
     # 1. 功能指令優先比對
     # (A) 完整指令大全
@@ -650,28 +852,37 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         return
 
     # (G-3) 支援直接文字修改支出內容（金額、名稱、付款人、分攤名單）
-    def get_target_expense(item_query: str = "") -> Optional[Expense]:
-        if item_query:
-            clean_q = item_query.strip()
-            exp = db.query(Expense).filter(
-                Expense.group_id == group.id,
-                Expense.is_deleted == False,
-                Expense.item_name.ilike(f"%{clean_q}%")
-            ).order_by(Expense.id.desc()).first()
-            if exp:
-                return exp
-        if group.last_active_expense_id:
-            exp = db.query(Expense).filter(
-                Expense.group_id == group.id,
-                Expense.id == group.last_active_expense_id,
-                Expense.is_deleted == False
-            ).first()
-            if exp:
-                return exp
-        return db.query(Expense).filter(
-            Expense.group_id == group.id,
-            Expense.is_deleted == False
-        ).order_by(Expense.id.desc()).first()
+    # 0. 若僅傳送「修改金額」或「改金額」
+    if user_text in ["修改金額", "改金額", "改價錢", "改費用"]:
+        expense = get_target_expense()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+        set_waiting_state(line_group_id, user_id, "edit_amount", {"expense_id": expense.id})
+        curr = expense.currency or (group.base_currency or "TWD")
+        cur_amt_str = format_amount(expense.original_amount or expense.amount, curr)
+        reply_text(
+            messaging_api,
+            reply_token,
+            f"✏️ 請輸入【{expense.item_name}】的新金額（目前為 {cur_amt_str}）：\n\n"
+            f"💡 直接傳送新金額即可（例如「500」），或傳送「取消」放棄修改。"
+        )
+        return
+
+    # 0-2. 若僅傳送「修改名稱」或「改名稱」
+    if user_text in ["修改名稱", "改名稱", "改品項", "修改項目"]:
+        expense = get_target_expense()
+        if not expense:
+            reply_text(messaging_api, reply_token, "⚠️ 目前尚無可修改的支出紀錄！")
+            return
+        set_waiting_state(line_group_id, user_id, "edit_name", {"expense_id": expense.id})
+        reply_text(
+            messaging_api,
+            reply_token,
+            f"✏️ 請輸入【{expense.item_name}】的新名稱：\n\n"
+            f"💡 直接傳送新名稱即可，或傳送「取消」放棄修改。"
+        )
+        return
 
     # Pattern 1: 修改金額
     edit_amt_match = (
@@ -1266,6 +1477,7 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
     params = dict(urllib.parse.parse_qsl(postback_data))
     action = params.get("action")
     line_group_id = get_group_id_from_event(event)
+    user_id = getattr(event.source, "user_id", "")
 
     group = get_or_create_group(db, line_group_id)
 
@@ -1656,13 +1868,14 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
             return
         group.last_active_expense_id = expense.id
         db.commit()
+        set_waiting_state(line_group_id, user_id, "edit_amount", {"expense_id": expense.id})
         curr = expense.currency or (group.base_currency or "TWD")
         cur_amt_str = format_amount(expense.original_amount or expense.amount, curr)
         reply_text(
             messaging_api,
             reply_token,
             f"✏️ 請輸入【{expense.item_name}】的新金額（目前為 {cur_amt_str}）：\n\n"
-            f"👉 例如直接傳送：「改金額 500」或「500」"
+            f"💡 直接傳送新金額即可（例如「500」），或傳送「取消」放棄修改。"
         )
         return
 
@@ -1674,11 +1887,12 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
             return
         group.last_active_expense_id = expense.id
         db.commit()
+        set_waiting_state(line_group_id, user_id, "edit_name", {"expense_id": expense.id})
         reply_text(
             messaging_api,
             reply_token,
             f"✏️ 請輸入【{expense.item_name}】的新名稱：\n\n"
-            f"👉 例如直接傳送：「改名稱 泰式奶茶」"
+            f"💡 直接傳送新名稱即可（例如「泰國機場接送」），或傳送「取消」放棄修改。"
         )
         return
 

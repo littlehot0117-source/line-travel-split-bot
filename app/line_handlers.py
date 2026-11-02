@@ -40,6 +40,7 @@ from app.flex_templates import (
     create_repayment_guide_flex,
     create_settlement_flex,
     create_expense_list_flex,
+    format_all_expenses_text,
     create_edit_expense_flex,
     create_edit_payer_selection_flex,
     create_edit_split_selection_flex,
@@ -535,11 +536,11 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         "指令", "所有指令", "指令表", "指令大全", "說明", "使用說明", "教學", "怎麼用", "help", "commands",
         "選單", "功能", "主選單", "目錄", "menu",
         "結算", "查看結算", "算帳", "還款", "小額還款", "還款教學", "登記還款", "還款指南", "怎麼還款",
-        "明細", "查看明細", "帳務明細", "成員名單", "查看成員", "旅伴",
+        "明細", "查看明細", "帳務明細", "支出明細", "全部明細", "完整明細", "所有明細", "清單明細", "匯出明細", "成員名單", "查看成員", "旅伴",
         "清空紀錄", "重新開始", "新旅程", "歸零", "設定幣別", "幣別", "當下幣別", "切換幣別", "預設幣別", "換幣別",
         "匯率表", "查看匯率", "匯率清單"
     ]
-    if user_text.lower() in global_commands or re.match(r"^(?:新增成員|新增夥伴|旅伴|設定匯率|匯率設定)\s*", user_text):
+    if user_text.lower() in global_commands or re.match(r"^(?:新增成員|新增夥伴|旅伴|設定匯率|匯率設定|明細|查看明細|帳務明細|支出明細)\s*", user_text):
         clear_waiting_state(line_group_id, user_id)
 
     # 0.5 處理等待輸入狀態（WAITING_STATES，例如修改名稱、修改金額）
@@ -698,8 +699,34 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         reply_flex(messaging_api, reply_token, "💸 旅伴小額還款指南", create_repayment_guide_flex())
         return
 
-    # (D) 查看明細
-    if user_text in ["明細", "查看明細", "帳務明細"]:
+    # (D-1) 完整文字明細清單（一次列出所有筆數，方便核對與複製備份）
+    if user_text in ["全部明細", "完整明細", "所有明細", "匯出明細", "清單明細"]:
+        expenses = db.query(Expense).filter(
+            Expense.group_id == group.id,
+            Expense.is_deleted == False
+        ).order_by(Expense.id.asc()).all()
+
+        base_curr = group.base_currency or "TWD"
+        exp_list = []
+        for e in expenses:
+            exp_list.append({
+                "id": e.id,
+                "item_name": e.item_name,
+                "amount": e.amount,
+                "original_amount": e.original_amount if e.original_amount else e.amount,
+                "currency": e.currency or base_curr,
+                "payer_name": e.payer.display_name if e.payer else "未知",
+                "split_desc": f"{e.split_count}人均分",
+                "split_type": e.split_type
+            })
+        full_text = format_all_expenses_text(exp_list, base_curr)
+        reply_text(messaging_api, reply_token, full_text)
+        return
+
+    # (D-2) 查看明細（分頁卡片，支援輸入「明細 2」直接跳頁）
+    view_exp_match = re.match(r"^(?:明細|查看明細|帳務明細|支出明細)\s*(?:第)?\s*(\d+)?\s*(?:頁)?$", user_text)
+    if view_exp_match:
+        page_val = int(view_exp_match.group(1)) if view_exp_match.group(1) else 1
         expenses = db.query(Expense).filter(
             Expense.group_id == group.id,
             Expense.is_deleted == False
@@ -718,7 +745,7 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
                 "split_desc": f"{e.split_count}人均分",
                 "split_type": e.split_type
             })
-        reply_flex(messaging_api, reply_token, "📋 支出明細", create_expense_list_flex(exp_list, base_curr))
+        reply_flex(messaging_api, reply_token, f"📋 支出明細 (第{page_val}頁)", create_expense_list_flex(exp_list, base_curr, page=page_val))
         return
 
     # (E) 成員管理指令
@@ -1813,8 +1840,9 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
         reply_flex(messaging_api, reply_token, "📊 結算報表", create_settlement_flex(settlement_data))
         return
 
-    # 4. 點選「查看明細」
+    # 4. 點選「查看明細」（支援分頁）
     if action == "view_expenses":
+        page_val = int(params.get("page", 1))
         expenses = db.query(Expense).filter(
             Expense.group_id == group.id,
             Expense.is_deleted == False
@@ -1833,7 +1861,31 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
                 "split_desc": f"{e.split_count}人均分",
                 "split_type": e.split_type
             })
-        reply_flex(messaging_api, reply_token, "📋 支出明細", create_expense_list_flex(exp_list, base_curr))
+        reply_flex(messaging_api, reply_token, f"📋 支出明細 (第{page_val}頁)", create_expense_list_flex(exp_list, base_curr, page=page_val))
+        return
+
+    # 4.1 點選「全部明細清單」（完整文字列表）
+    if action == "view_all_expenses_text":
+        expenses = db.query(Expense).filter(
+            Expense.group_id == group.id,
+            Expense.is_deleted == False
+        ).order_by(Expense.id.asc()).all()
+
+        base_curr = group.base_currency or "TWD"
+        exp_list = []
+        for e in expenses:
+            exp_list.append({
+                "id": e.id,
+                "item_name": e.item_name,
+                "amount": e.amount,
+                "original_amount": e.original_amount if e.original_amount else e.amount,
+                "currency": e.currency or base_curr,
+                "payer_name": e.payer.display_name if e.payer else "未知",
+                "split_desc": f"{e.split_count}人均分",
+                "split_type": e.split_type
+            })
+        full_text = format_all_expenses_text(exp_list, base_curr)
+        reply_text(messaging_api, reply_token, full_text)
         return
 
     # 5. 點選「撤銷/刪除支出或還款」

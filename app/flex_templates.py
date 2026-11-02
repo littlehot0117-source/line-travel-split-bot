@@ -1651,8 +1651,13 @@ def create_settlement_flex(settlement_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str = "TWD") -> Dict[str, Any]:
-    """查看最近支出明細清單"""
+def create_expense_list_flex(
+    expenses: List[Dict[str, Any]],
+    base_currency: str = "TWD",
+    page: int = 1,
+    page_size: int = 8
+) -> Dict[str, Any]:
+    """查看支出明細清單（支援分頁瀏覽）"""
     if not expenses:
         return {
             "type": "bubble",
@@ -1667,8 +1672,16 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
 
     from app.currency import format_amount
 
+    total_count = len(expenses)
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = min(start_idx + page_size, total_count)
+    page_items = expenses[start_idx:end_idx]
+
     item_rows = []
-    for exp in expenses[:10]:  # 最多顯示 10 筆
+    for exp in page_items:
         curr = exp.get("currency") or "TWD"
         orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
         base_twd_amt = exp.get("amount", 0)
@@ -1760,14 +1773,140 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
         })
         item_rows.append({"type": "separator", "margin": "xs"})
 
+    # 頁腳按鈕區
+    footer_contents = []
+
+    # 分頁導航列（當總頁數 > 1 時顯示）
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append({
+                "type": "button",
+                "style": "primary",
+                "color": "#0284C7",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "⬅️ 上一頁",
+                    "data": f"action=view_expenses&page={page - 1}",
+                    "displayText": f"明細 第 {page - 1} 頁"
+                }
+            })
+        else:
+            nav_buttons.append({
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "⬅️ 首頁",
+                    "data": "action=view_expenses&page=1"
+                }
+            })
+
+        if page < total_pages:
+            nav_buttons.append({
+                "type": "button",
+                "style": "primary",
+                "color": "#0284C7",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "下一頁 ➡️",
+                    "data": f"action=view_expenses&page={page + 1}",
+                    "displayText": f"明細 第 {page + 1} 頁"
+                }
+            })
+        else:
+            nav_buttons.append({
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "末頁 ➡️",
+                    "data": f"action=view_expenses&page={total_pages}"
+                }
+            })
+
+        footer_contents.append({
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "sm",
+            "contents": nav_buttons
+        })
+
+    # 功能操作列：全部明細清單 + 查看結算
+    action_box = {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "sm",
+        "margin": "xs" if total_pages > 1 else "none",
+        "contents": [
+            {
+                "type": "button",
+                "style": "secondary",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "📑 全部明細清單",
+                    "data": "action=view_all_expenses_text",
+                    "displayText": "全部明細"
+                }
+            },
+            {
+                "type": "button",
+                "style": "primary",
+                "color": "#0284C7",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": "📊 查看總結算",
+                    "data": "action=view_settlement",
+                    "displayText": "查看結算"
+                }
+            }
+        ]
+    }
+    footer_contents.append(action_box)
+
     return {
         "type": "bubble",
         "header": {
             "type": "box",
             "layout": "vertical",
             "backgroundColor": "#0284C7",
+            "paddingAll": "12px",
             "contents": [
-                {"type": "text", "text": "📋 最近支出紀錄", "weight": "bold", "color": "#FFFFFF", "size": "md"}
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "📋 支出明細",
+                            "weight": "bold",
+                            "color": "#FFFFFF",
+                            "size": "md",
+                            "flex": 5
+                        },
+                        {
+                            "type": "text",
+                            "text": f"第 {page}/{total_pages} 頁（共 {total_count} 筆）",
+                            "color": "#E0F2FE",
+                            "size": "xs",
+                            "align": "end",
+                            "gravity": "center",
+                            "flex": 7
+                        }
+                    ]
+                }
             ]
         },
         "body": {
@@ -1778,23 +1917,49 @@ def create_expense_list_flex(expenses: List[Dict[str, Any]], base_currency: str 
         },
         "footer": {
             "type": "box",
-            "layout": "horizontal",
-            "contents": [
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#0284C7",
-                    "height": "sm",
-                    "action": {
-                        "type": "postback",
-                        "label": "📊 查看總結算",
-                        "data": "action=view_settlement",
-                        "displayText": "查看結算"
-                    }
-                }
-            ]
+            "layout": "vertical",
+            "spacing": "xs",
+            "contents": footer_contents
         }
     }
+
+
+def format_all_expenses_text(expenses: List[Dict[str, Any]], base_currency: str = "TWD") -> str:
+    """產生完整文字版明細清單（一口氣列出所有筆數，方便核對與複製）"""
+    if not expenses:
+        return "📋 目前尚無任何記帳支出！"
+
+    from app.currency import format_amount
+
+    total_base = sum(e.get("amount", 0) for e in expenses)
+    total_count = len(expenses)
+
+    lines = [
+        f"📋 本次旅程支出總明細（共 {total_count} 筆）",
+        f"💰 總支出折合：{format_amount(total_base, base_currency)}",
+        "─────────────────────"
+    ]
+
+    for idx, exp in enumerate(expenses, 1):
+        curr = exp.get("currency") or "TWD"
+        orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
+        base_amt = exp.get("amount", 0)
+        is_repay = exp.get("split_type") == "REPAYMENT" or "小額還款" in exp.get("item_name", "")
+
+        amt_str = format_amount(orig_amt, curr)
+        if curr != "TWD":
+            amt_str += f" (≈ NT$ {int(round(base_amt)):,})"
+
+        if is_repay:
+            lines.append(f"{idx}. 💸 {exp['item_name']}：{amt_str} [還款沖銷]")
+        else:
+            payer = exp.get("payer_name", "未知")
+            split = exp.get("split_desc", "均分")
+            lines.append(f"{idx}. {exp['item_name']}：{amt_str} ({payer}先付 • {split})")
+
+    lines.append("─────────────────────")
+    lines.append("💡 提示：傳送「明細 2」可看分頁卡片，傳送「結算」查看收支結算報表！")
+    return "\n".join(lines)
 
 
 def create_edit_expense_flex(expense_data: Dict[str, Any], base_currency: str = "TWD") -> Dict[str, Any]:

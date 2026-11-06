@@ -342,7 +342,7 @@ def parse_full_expense(text: str, member_list: List[Member], default_curr: str =
             continue
 
         # 排除以常見指令開頭的品項（避免指令文字被誤判為記帳）
-        if re.match(r'^(?:取消|修改|改名稱|改金額|改付款人|改分攤|刪除|結算|明細|成員|新增成員|設定|查看)', item):
+        if re.match(r'^(?:取消|修改|改名稱|改金額|改付款人|改分攤|刪除|結算|明細|總明細|支出總明細|成員|新增成員|設定|查看)', item):
             continue
 
         try:
@@ -536,11 +536,11 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         "指令", "所有指令", "指令表", "指令大全", "說明", "使用說明", "教學", "怎麼用", "help", "commands",
         "選單", "功能", "主選單", "目錄", "menu",
         "結算", "查看結算", "算帳", "還款", "小額還款", "還款教學", "登記還款", "還款指南", "怎麼還款",
-        "明細", "查看明細", "帳務明細", "支出明細", "全部明細", "完整明細", "所有明細", "清單明細", "匯出明細", "成員名單", "查看成員", "旅伴",
+        "明細", "查看明細", "帳務明細", "支出明細", "全部明細", "完整明細", "所有明細", "清單明細", "匯出明細", "支出總明細", "總明細", "支出清單", "台幣明細", "泰銖明細", "TWD明細", "THB明細", "成員名單", "查看成員", "旅伴",
         "清空紀錄", "重新開始", "新旅程", "歸零", "設定幣別", "幣別", "當下幣別", "切換幣別", "預設幣別", "換幣別",
         "匯率表", "查看匯率", "匯率清單"
     ]
-    if user_text.lower() in global_commands or re.match(r"^(?:新增成員|新增夥伴|旅伴|設定匯率|匯率設定|明細|查看明細|帳務明細|支出明細)\s*", user_text):
+    if user_text.lower() in global_commands or re.match(r"^(?:新增成員|新增夥伴|旅伴|設定匯率|匯率設定|明細|查看明細|帳務明細|支出明細|支出總明細|總明細|台幣明細|泰銖明細|TWD明細|THB明細)\s*", user_text, re.I):
         clear_waiting_state(line_group_id, user_id)
 
     # 0.5 處理等待輸入狀態（WAITING_STATES，例如修改名稱、修改金額）
@@ -699,8 +699,8 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         reply_flex(messaging_api, reply_token, "💸 旅伴小額還款指南", create_repayment_guide_flex())
         return
 
-    # (D-1) 完整文字明細清單（一次列出所有筆數，方便核對與複製備份）
-    if user_text in ["全部明細", "完整明細", "所有明細", "匯出明細", "清單明細"]:
+    # (D-1) 完整文字明細清單（按幣別分組統計總額小計，方便核對與複製備份）
+    if user_text in ["全部明細", "完整明細", "所有明細", "匯出明細", "清單明細", "支出總明細", "總明細", "支出清單"]:
         expenses = db.query(Expense).filter(
             Expense.group_id == group.id,
             Expense.is_deleted == False
@@ -723,10 +723,32 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
         reply_text(messaging_api, reply_token, full_text)
         return
 
-    # (D-2) 查看明細（分頁卡片，支援輸入「明細 2」直接跳頁）
-    view_exp_match = re.match(r"^(?:明細|查看明細|帳務明細|支出明細)\s*(?:第)?\s*(\d+)?\s*(?:頁)?$", user_text)
+    # (D-2) 查看明細（分頁卡片，支援輸入「明細 2」或「泰銖明細」、「台幣明細」直接篩選與跳頁）
+    curr_alias_map = {
+        "台幣": "TWD", "twd": "TWD", "ntd": "TWD", "nt": "TWD",
+        "泰銖": "THB", "thb": "THB", "泰幣": "THB",
+        "日幣": "JPY", "jpy": "JPY", "日圓": "JPY",
+        "美金": "USD", "usd": "USD", "美元": "USD",
+        "歐元": "EUR", "eur": "EUR",
+        "韓元": "KRW", "krw": "KRW",
+        "越盾": "VND", "vnd": "VND",
+        "新幣": "SGD", "sgd": "SGD",
+        "港幣": "HKD", "hkd": "HKD"
+    }
+
+    view_exp_match = re.match(r"^(?:([^\d\s]+)\s*)?(?:明細|查看明細|帳務明細|支出明細)\s*(?:([^\d\s]+)\s*)?(?:第)?\s*(\d+)?\s*(?:頁)?$", user_text, re.I)
     if view_exp_match:
-        page_val = int(view_exp_match.group(1)) if view_exp_match.group(1) else 1
+        c1 = view_exp_match.group(1)
+        c2 = view_exp_match.group(2)
+        p_val = view_exp_match.group(3)
+
+        matched_curr = None
+        for cand in [c1, c2]:
+            if cand and cand.lower() in curr_alias_map:
+                matched_curr = curr_alias_map[cand.lower()]
+                break
+
+        page_val = int(p_val) if p_val else 1
         expenses = db.query(Expense).filter(
             Expense.group_id == group.id,
             Expense.is_deleted == False
@@ -745,7 +767,14 @@ def handle_text_message(event: MessageEvent, db: Session, api_client: ApiClient)
                 "split_desc": f"{e.split_count}人均分",
                 "split_type": e.split_type
             })
-        reply_flex(messaging_api, reply_token, f"📋 支出明細 (第{page_val}頁)", create_expense_list_flex(exp_list, base_curr, page=page_val))
+
+        title_curr = f"{matched_curr} " if matched_curr else ""
+        reply_flex(
+            messaging_api,
+            reply_token,
+            f"📋 {title_curr}支出明細 (第{page_val}頁)",
+            create_expense_list_flex(exp_list, base_curr, page=page_val, currency_filter=matched_curr)
+        )
         return
 
     # (E) 成員管理指令
@@ -1840,9 +1869,10 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
         reply_flex(messaging_api, reply_token, "📊 結算報表", create_settlement_flex(settlement_data))
         return
 
-    # 4. 點選「查看明細」（支援分頁）
+    # 4. 點選「查看明細」（支援分頁與幣別篩選）
     if action == "view_expenses":
         page_val = int(params.get("page", 1))
+        currency_filter = params.get("currency")
         expenses = db.query(Expense).filter(
             Expense.group_id == group.id,
             Expense.is_deleted == False
@@ -1861,7 +1891,13 @@ def handle_postback(event: PostbackEvent, db: Session, api_client: ApiClient):
                 "split_desc": f"{e.split_count}人均分",
                 "split_type": e.split_type
             })
-        reply_flex(messaging_api, reply_token, f"📋 支出明細 (第{page_val}頁)", create_expense_list_flex(exp_list, base_curr, page=page_val))
+        title_curr = f"{currency_filter} " if currency_filter else ""
+        reply_flex(
+            messaging_api,
+            reply_token,
+            f"📋 {title_curr}支出明細 (第{page_val}頁)",
+            create_expense_list_flex(exp_list, base_curr, page=page_val, currency_filter=currency_filter)
+        )
         return
 
     # 4.1 點選「全部明細清單」（完整文字列表）

@@ -136,6 +136,98 @@ class TestExpenseListPagination(unittest.TestCase):
         evt = MockPostbackEvent("action=view_all_expenses_text")
         handle_postback(evt, self.db, self.mock_api_client)
 
+    def test_format_all_expenses_text_multi_currency(self):
+        """測試多幣別（台幣 + 泰銖）完整支出總明細的分開小計與分組列表"""
+        twd_items = [
+            {"id": i, "item_name": f"台幣項目_{i}", "amount": 1000.0, "original_amount": 1000.0, "currency": "TWD", "payer_name": "小明", "split_desc": "全體均分"}
+            for i in range(1, 15)
+        ]
+        thb_items = [
+            {"id": 14 + j, "item_name": f"泰銖項目_{j}", "amount": 92.0, "original_amount": 100.0, "currency": "THB", "payer_name": "小美", "split_desc": "全體均分"}
+            for j in range(1, 20)
+        ]
+        all_exp = twd_items + thb_items
+
+        result = format_all_expenses_text(all_exp, base_currency="TWD")
+
+        # 驗證頂部幣別小計與總額
+        self.assertIn("共 33 筆", result)
+        self.assertIn("各幣別支出總計", result)
+        self.assertIn("🇹🇼 TWD 總計：NT$ 14,000（共 14 筆）", result)
+        self.assertIn("🇹🇭 THB 總計：฿ 1,900.00（共 19 筆，折合 NT$ 1,748）", result)
+        self.assertIn("旅程總支出折合：NT$ 15,748", result)
+
+        # 驗證依幣別分組之區塊
+        self.assertIn("【🇹🇼 TWD 支出明細 • 共 14 筆 • 小計 NT$ 14,000】", result)
+        self.assertIn("【🇹🇭 THB 支出明細 • 共 19 筆 • 小計 ฿ 1,900.00 (折合 NT$ 1,748)】", result)
+        self.assertIn("1. 台幣項目_1", result)
+        self.assertIn("15. 泰銖項目_1", result)
+
+    def test_flex_multi_currency_filtering(self):
+        """測試 Flex 明細卡片之多幣別統計與幣別篩選功能"""
+        twd_items = [
+            {"id": i, "item_name": f"台幣項目_{i}", "amount": 1000.0, "original_amount": 1000.0, "currency": "TWD", "payer_name": "小明", "split_desc": "全體均分"}
+            for i in range(1, 15)
+        ]
+        thb_items = [
+            {"id": 14 + j, "item_name": f"泰銖項目_{j}", "amount": 92.0, "original_amount": 100.0, "currency": "THB", "payer_name": "小美", "split_desc": "全體均分"}
+            for j in range(1, 20)
+        ]
+        all_exp = twd_items + thb_items
+
+        # 1. 預設「全部」卡片：帶有頂部幣別統計與篩選按鈕
+        flex_all = create_expense_list_flex(all_exp, base_currency="TWD", page=1, page_size=8)
+        self.assertIn("第 1/5 頁（共 33 筆）", flex_all["header"]["contents"][0]["contents"][1]["text"])
+        body_str = str(flex_all["body"])
+        self.assertIn("幣別支出統計", body_str)
+        self.assertIn("action=view_expenses&currency=TWD&page=1", body_str)
+        self.assertIn("action=view_expenses&currency=THB&page=1", body_str)
+
+        # 2. 篩選「THB 泰銖」卡片：共 19 筆，每頁 8 筆共 3 頁
+        flex_thb = create_expense_list_flex(all_exp, base_currency="TWD", page=1, page_size=8, currency_filter="THB")
+        self.assertIn("THB 支出明細", flex_thb["header"]["contents"][0]["contents"][0]["text"])
+        self.assertIn("第 1/3 頁（共 19 筆）", flex_thb["header"]["contents"][0]["contents"][1]["text"])
+        # 下一頁按鈕應保持 &currency=THB
+        footer_str = str(flex_thb["footer"])
+        self.assertIn("action=view_expenses&page=2&currency=THB", footer_str)
+
+        # 3. 篩選「TWD 台幣」卡片：共 14 筆，每頁 8 筆共 2 頁
+        flex_twd = create_expense_list_flex(all_exp, base_currency="TWD", page=2, page_size=8, currency_filter="TWD")
+        self.assertIn("TWD 支出明細", flex_twd["header"]["contents"][0]["contents"][0]["text"])
+        self.assertIn("第 2/2 頁（共 14 筆）", flex_twd["header"]["contents"][0]["contents"][1]["text"])
+
+    def test_text_command_total_expense_and_currency_filters(self):
+        """測試使用者輸入「支出總明細」、「泰銖明細」、「台幣明細」之指令回應"""
+        # 建立一筆 THB 支出
+        thb_exp = Expense(
+            group_id=self.group.id,
+            item_name="泰國按摩",
+            amount=500.0,
+            original_amount=550.0,
+            currency="THB",
+            payer_id=self.m2.id,
+            split_count=2,
+            split_type="EQUAL_ALL"
+        )
+        self.db.add(thb_exp)
+        self.db.commit()
+
+        # 1. 測試「支出總明細」
+        evt1 = MockMessageEvent("支出總明細")
+        handle_text_message(evt1, self.db, self.mock_api_client)
+
+        # 2. 測試「泰銖明細」
+        evt2 = MockMessageEvent("泰銖明細")
+        handle_text_message(evt2, self.db, self.mock_api_client)
+
+        # 3. 測試「台幣明細 2」
+        evt3 = MockMessageEvent("台幣明細 2")
+        handle_text_message(evt3, self.db, self.mock_api_client)
+
+        # 4. 測試 Postback action=view_expenses&currency=THB&page=1
+        pb_evt = MockPostbackEvent("action=view_expenses&currency=THB&page=1")
+        handle_postback(pb_evt, self.db, self.mock_api_client)
+
 
 if __name__ == "__main__":
     unittest.main()

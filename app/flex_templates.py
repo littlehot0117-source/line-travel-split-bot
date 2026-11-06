@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 def create_main_menu_flex() -> Dict[str, Any]:
@@ -1655,9 +1655,10 @@ def create_expense_list_flex(
     expenses: List[Dict[str, Any]],
     base_currency: str = "TWD",
     page: int = 1,
-    page_size: int = 8
+    page_size: int = 8,
+    currency_filter: Optional[str] = None
 ) -> Dict[str, Any]:
-    """查看支出明細清單（支援分頁瀏覽）"""
+    """查看支出明細清單（支援多幣別統計、幣別篩選、分頁瀏覽）"""
     if not expenses:
         return {
             "type": "bubble",
@@ -1672,15 +1673,143 @@ def create_expense_list_flex(
 
     from app.currency import format_amount
 
-    total_count = len(expenses)
+    curr_icons = {
+        "TWD": "🇹🇼",
+        "THB": "🇹🇭",
+        "JPY": "🇯🇵",
+        "USD": "🇺🇸",
+        "EUR": "🇪🇺",
+        "KRW": "🇰🇷",
+        "SGD": "🇸🇬",
+        "HKD": "🇭🇰",
+        "VND": "🇻🇳",
+    }
+
+    # 1. 計算所有幣別的總筆數與小計
+    currencies_map = {}
+    for exp in expenses:
+        curr = (exp.get("currency") or base_currency).upper()
+        if curr not in currencies_map:
+            currencies_map[curr] = {
+                "orig_total": 0.0,
+                "base_total": 0.0,
+                "count": 0
+            }
+        orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
+        base_amt = exp.get("amount", 0)
+        currencies_map[curr]["orig_total"] += orig_amt
+        currencies_map[curr]["base_total"] += base_amt
+        currencies_map[curr]["count"] += 1
+
+    total_base = sum(e.get("amount", 0) for e in expenses)
+    has_multiple_currencies = len(currencies_map) > 1
+
+    sorted_currencies = sorted(
+        currencies_map.keys(),
+        key=lambda c: (0 if c == base_currency else 1, -currencies_map[c]["count"], c)
+    )
+
+    # 2. 進行篩選（若有指定 currency_filter）
+    norm_filter = currency_filter.upper() if currency_filter else None
+    if norm_filter and norm_filter in currencies_map:
+        active_expenses = [e for e in expenses if (e.get("currency") or base_currency).upper() == norm_filter]
+    else:
+        norm_filter = None
+        active_expenses = expenses
+
+    total_count = len(active_expenses)
     total_pages = max(1, (total_count + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
 
     start_idx = (page - 1) * page_size
     end_idx = min(start_idx + page_size, total_count)
-    page_items = expenses[start_idx:end_idx]
+    page_items = active_expenses[start_idx:end_idx]
 
-    item_rows = []
+    body_contents = []
+
+    # 3. 頂部幣別統計卡片（多幣別時顯示各幣別小計與總折合）
+    if has_multiple_currencies:
+        stat_rows = []
+        for c in sorted_currencies:
+            c_info = currencies_map[c]
+            c_icon = curr_icons.get(c, "💵")
+            c_orig_str = format_amount(c_info["orig_total"], c)
+            stat_rows.append({
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                    {"type": "text", "text": f"{c_icon} {c} ({c_info['count']}筆)", "size": "xs", "color": "#475569", "flex": 5},
+                    {"type": "text", "text": c_orig_str, "size": "xs", "weight": "bold", "color": "#0F172A", "align": "end", "flex": 5}
+                ]
+            })
+
+        summary_box = {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#F8FAFC",
+            "cornerRadius": "md",
+            "paddingAll": "8px",
+            "spacing": "xs",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {"type": "text", "text": "💰 幣別支出統計", "size": "xs", "weight": "bold", "color": "#334155", "flex": 6},
+                        {"type": "text", "text": f"總折合 NT$ {int(round(total_base)):,}", "size": "xs", "weight": "bold", "color": "#16A34A", "align": "end", "flex": 6}
+                    ]
+                },
+                {"type": "separator", "margin": "xs"},
+                *stat_rows
+            ]
+        }
+        body_contents.append(summary_box)
+
+        # 4. 幣別切換按鈕列（全部 / 各幣別）
+        filter_buttons = []
+        all_active = norm_filter is None
+        filter_buttons.append({
+            "type": "button",
+            "style": "primary" if all_active else "secondary",
+            "color": "#0284C7" if all_active else "#F1F5F9",
+            "height": "sm",
+            "flex": 1,
+            "action": {
+                "type": "postback",
+                "label": f"全部 ({len(expenses)})",
+                "data": "action=view_expenses&page=1",
+                "displayText": "明細 全部"
+            }
+        })
+        for c in sorted_currencies:
+            c_active = norm_filter == c
+            c_icon = curr_icons.get(c, "")
+            c_count = currencies_map[c]["count"]
+            filter_buttons.append({
+                "type": "button",
+                "style": "primary" if c_active else "secondary",
+                "color": "#0284C7" if c_active else "#F1F5F9",
+                "height": "sm",
+                "flex": 1,
+                "action": {
+                    "type": "postback",
+                    "label": f"{c_icon} {c} ({c_count})",
+                    "data": f"action=view_expenses&currency={c}&page=1",
+                    "displayText": f"{c}明細"
+                }
+            })
+
+        filter_bar = {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "xs",
+            "margin": "xs",
+            "contents": filter_buttons
+        }
+        body_contents.append(filter_bar)
+        body_contents.append({"type": "separator", "margin": "sm"})
+
+    # 5. 支出項目列表
     for exp in page_items:
         curr = exp.get("currency") or "TWD"
         orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
@@ -1735,7 +1864,7 @@ def create_expense_list_flex(
             }
         })
 
-        item_rows.append({
+        body_contents.append({
             "type": "box",
             "layout": "vertical",
             "spacing": "xs",
@@ -1771,12 +1900,13 @@ def create_expense_list_flex(
                 }
             ]
         })
-        item_rows.append({"type": "separator", "margin": "xs"})
+        body_contents.append({"type": "separator", "margin": "xs"})
 
     # 頁腳按鈕區
     footer_contents = []
 
     # 分頁導航列（當總頁數 > 1 時顯示）
+    curr_param = f"&currency={norm_filter}" if norm_filter else ""
     if total_pages > 1:
         nav_buttons = []
         if page > 1:
@@ -1789,7 +1919,7 @@ def create_expense_list_flex(
                 "action": {
                     "type": "postback",
                     "label": "⬅️ 上一頁",
-                    "data": f"action=view_expenses&page={page - 1}",
+                    "data": f"action=view_expenses&page={page - 1}{curr_param}",
                     "displayText": f"明細 第 {page - 1} 頁"
                 }
             })
@@ -1802,7 +1932,7 @@ def create_expense_list_flex(
                 "action": {
                     "type": "postback",
                     "label": "⬅️ 首頁",
-                    "data": "action=view_expenses&page=1"
+                    "data": f"action=view_expenses&page=1{curr_param}"
                 }
             })
 
@@ -1816,7 +1946,7 @@ def create_expense_list_flex(
                 "action": {
                     "type": "postback",
                     "label": "下一頁 ➡️",
-                    "data": f"action=view_expenses&page={page + 1}",
+                    "data": f"action=view_expenses&page={page + 1}{curr_param}",
                     "displayText": f"明細 第 {page + 1} 頁"
                 }
             })
@@ -1829,7 +1959,7 @@ def create_expense_list_flex(
                 "action": {
                     "type": "postback",
                     "label": "末頁 ➡️",
-                    "data": f"action=view_expenses&page={total_pages}"
+                    "data": f"action=view_expenses&page={total_pages}{curr_param}"
                 }
             })
 
@@ -1876,6 +2006,8 @@ def create_expense_list_flex(
     }
     footer_contents.append(action_box)
 
+    header_title = f"📋 {curr_icons.get(norm_filter, '')} {norm_filter} 支出明細" if norm_filter else "📋 支出明細"
+
     return {
         "type": "bubble",
         "header": {
@@ -1890,11 +2022,11 @@ def create_expense_list_flex(
                     "contents": [
                         {
                             "type": "text",
-                            "text": "📋 支出明細",
+                            "text": header_title.strip(),
                             "weight": "bold",
                             "color": "#FFFFFF",
                             "size": "md",
-                            "flex": 5
+                            "flex": 6
                         },
                         {
                             "type": "text",
@@ -1903,7 +2035,7 @@ def create_expense_list_flex(
                             "size": "xs",
                             "align": "end",
                             "gravity": "center",
-                            "flex": 7
+                            "flex": 6
                         }
                     ]
                 }
@@ -1913,7 +2045,7 @@ def create_expense_list_flex(
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
-            "contents": item_rows
+            "contents": body_contents
         },
         "footer": {
             "type": "box",
@@ -1925,7 +2057,7 @@ def create_expense_list_flex(
 
 
 def format_all_expenses_text(expenses: List[Dict[str, Any]], base_currency: str = "TWD") -> str:
-    """產生完整文字版明細清單（一口氣列出所有筆數，方便核對與複製）"""
+    """產生完整文字版明細清單（按幣別分組統計總額小計，方便核對與複製備份）"""
     if not expenses:
         return "📋 目前尚無任何記帳支出！"
 
@@ -1934,31 +2066,98 @@ def format_all_expenses_text(expenses: List[Dict[str, Any]], base_currency: str 
     total_base = sum(e.get("amount", 0) for e in expenses)
     total_count = len(expenses)
 
-    lines = [
-        f"📋 本次旅程支出總明細（共 {total_count} 筆）",
-        f"💰 總支出折合：{format_amount(total_base, base_currency)}",
-        "─────────────────────"
-    ]
+    # 幣別旗幟/符號映射
+    curr_icons = {
+        "TWD": "🇹🇼",
+        "THB": "🇹🇭",
+        "JPY": "🇯🇵",
+        "USD": "🇺🇸",
+        "EUR": "🇪🇺",
+        "KRW": "🇰🇷",
+        "SGD": "🇸🇬",
+        "HKD": "🇭🇰",
+        "VND": "🇻🇳",
+    }
 
-    for idx, exp in enumerate(expenses, 1):
-        curr = exp.get("currency") or "TWD"
+    # 依幣別分類統計
+    currencies_map = {}
+    for exp in expenses:
+        curr = (exp.get("currency") or base_currency).upper()
+        if curr not in currencies_map:
+            currencies_map[curr] = {
+                "orig_total": 0.0,
+                "base_total": 0.0,
+                "count": 0,
+                "items": []
+            }
         orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
         base_amt = exp.get("amount", 0)
-        is_repay = exp.get("split_type") == "REPAYMENT" or "小額還款" in exp.get("item_name", "")
+        currencies_map[curr]["orig_total"] += orig_amt
+        currencies_map[curr]["base_total"] += base_amt
+        currencies_map[curr]["count"] += 1
+        currencies_map[curr]["items"].append(exp)
 
-        amt_str = format_amount(orig_amt, curr)
-        if curr != "TWD":
-            amt_str += f" (≈ NT$ {int(round(base_amt)):,})"
+    # 排序幣別：base_currency (TWD) 先排，其他依筆數由大到小排序
+    sorted_currencies = sorted(
+        currencies_map.keys(),
+        key=lambda c: (0 if c == base_currency else 1, -currencies_map[c]["count"], c)
+    )
 
-        if is_repay:
-            lines.append(f"{idx}. 💸 {exp['item_name']}：{amt_str} [還款沖銷]")
+    lines = [
+        f"📋 本次旅程支出總明細（共 {total_count} 筆）",
+        "═════════════════════",
+        "【💰 各幣別支出總計】"
+    ]
+
+    for curr in sorted_currencies:
+        info = currencies_map[curr]
+        icon = curr_icons.get(curr, "💵")
+        orig_fmt = format_amount(info["orig_total"], curr)
+        count_str = f"共 {info['count']} 筆"
+        if curr == base_currency:
+            lines.append(f"• {icon} {curr} 總計：{orig_fmt}（{count_str}）")
         else:
-            payer = exp.get("payer_name", "未知")
-            split = exp.get("split_desc", "均分")
-            lines.append(f"{idx}. {exp['item_name']}：{amt_str} ({payer}先付 • {split})")
+            base_fmt = format_amount(info["base_total"], base_currency)
+            lines.append(f"• {icon} {curr} 總計：{orig_fmt}（{count_str}，折合 {base_fmt}）")
 
     lines.append("─────────────────────")
-    lines.append("💡 提示：傳送「明細 2」可看分頁卡片，傳送「結算」查看收支結算報表！")
+    lines.append(f"✨ 旅程總支出折合：{format_amount(total_base, base_currency)}")
+    lines.append("═════════════════════")
+
+    # 分幣別分組列出明細清單
+    global_idx = 1
+    for curr in sorted_currencies:
+        info = currencies_map[curr]
+        icon = curr_icons.get(curr, "💵")
+        orig_fmt = format_amount(info["orig_total"], curr)
+
+        lines.append("")
+        if curr == base_currency:
+            lines.append(f"【{icon} {curr} 支出明細 • 共 {info['count']} 筆 • 小計 {orig_fmt}】")
+        else:
+            base_fmt = format_amount(info["base_total"], base_currency)
+            lines.append(f"【{icon} {curr} 支出明細 • 共 {info['count']} 筆 • 小計 {orig_fmt} (折合 {base_fmt})】")
+
+        for exp in info["items"]:
+            orig_amt = exp.get("original_amount") if exp.get("original_amount") is not None else exp.get("amount", 0)
+            base_amt = exp.get("amount", 0)
+            is_repay = exp.get("split_type") == "REPAYMENT" or "小額還款" in exp.get("item_name", "")
+
+            amt_str = format_amount(orig_amt, curr)
+            if curr != base_currency:
+                amt_str += f" (≈ NT$ {int(round(base_amt)):,})"
+
+            if is_repay:
+                lines.append(f" {global_idx}. 💸 {exp['item_name']}：{amt_str} [還款沖銷]")
+            else:
+                payer = exp.get("payer_name", "未知")
+                split = exp.get("split_desc", "均分")
+                lines.append(f" {global_idx}. {exp['item_name']}：{amt_str} ({payer}先付 • {split})")
+            global_idx += 1
+
+    lines.append("")
+    lines.append("─────────────────────")
+    lines.append("💡 提示：傳送「台幣明細」或「泰銖明細」可切換瀏覽；傳送「結算」查看收支報表！")
     return "\n".join(lines)
 
 

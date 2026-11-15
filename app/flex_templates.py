@@ -1584,10 +1584,13 @@ def create_settlement_flex(settlement_data: Dict[str, Any]) -> Dict[str, Any]:
     if is_multi_currency:
         header_sub = f"共 {expense_count} 筆 • 各幣別獨立折算"
     else:
-        single_curr = currency_settlements[0].get("currency", base_curr) if currency_settlements else base_curr
-        from app.currency import CURRENCY_SYMBOLS
-        sym = CURRENCY_SYMBOLS.get(single_curr, single_curr)
-        header_sub = f"總支出：{sym} {total_spent:,}    共 {expense_count} 筆"
+        from app.currency import CURRENCY_SYMBOLS, format_amount
+        if currency_settlements:
+            single_curr = currency_settlements[0].get("currency", base_curr)
+            orig_total = currency_settlements[0].get("total_spent", total_spent)
+            header_sub = f"總支出：{format_amount(orig_total, single_curr)}    共 {expense_count} 筆"
+        else:
+            header_sub = f"總支出：{format_amount(total_spent, base_curr)}    共 {expense_count} 筆"
 
     return {
         "type": "bubble",

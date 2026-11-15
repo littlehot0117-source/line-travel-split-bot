@@ -338,7 +338,10 @@ def parse_full_expense(text: str, member_list: List[Member], default_curr: str =
         if re.search(r'[每第前後隔]$', item):
             continue
         # 若緊接在數字後方為時間、次數、計量單位（如「5分鐘」、「3點」），非記帳金額
-        if re.match(INVALID_EXPENSE_UNIT_PATTERN, rest, re.I):
+        # 但若 rest 整體是已知貨幣名稱（如「台幣」、「日幣」、「泰銖」），不過濾（貨幣優先）
+        rest_tokens_check = [t for t in re.split(r'[\s,，、/|]+', rest) if t]
+        first_token = rest_tokens_check[0] if rest_tokens_check else ''
+        if re.match(INVALID_EXPENSE_UNIT_PATTERN, rest, re.I) and not is_known_currency(first_token):
             continue
 
         # 排除以常見指令開頭的品項（避免指令文字被誤判為記帳）

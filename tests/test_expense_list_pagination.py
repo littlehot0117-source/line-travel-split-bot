@@ -228,6 +228,28 @@ class TestExpenseListPagination(unittest.TestCase):
         pb_evt = MockPostbackEvent("action=view_expenses&currency=THB&page=1")
         handle_postback(pb_evt, self.db, self.mock_api_client)
 
+    def test_parse_expense_with_currency_units(self):
+        """測試記帳文字包含『台幣』、『日幣』不會被計量單位過濾規則誤擋"""
+        from app.line_handlers import parse_full_expense
+        members = [self.m1, self.m2]
+        
+        parsed1 = parse_full_expense("高鐵 1000 台幣", members)
+        self.assertIsNotNone(parsed1)
+        self.assertEqual(parsed1["item"], "高鐵")
+        self.assertEqual(parsed1["amount"], 1000.0)
+        self.assertEqual(parsed1["currency"], "TWD")
+
+        parsed2 = parse_full_expense("拉麵 3000 日幣", members)
+        self.assertIsNotNone(parsed2)
+        self.assertEqual(parsed2["item"], "拉麵")
+        self.assertEqual(parsed2["amount"], 3000.0)
+        self.assertEqual(parsed2["currency"], "JPY")
+
+        # 同時驗證非記帳計量單位仍會被正確過濾
+        self.assertIsNone(parse_full_expense("等了 5分鐘", members))
+        self.assertIsNone(parse_full_expense("買了 2台", members))
+
+
 
 if __name__ == "__main__":
     unittest.main()
